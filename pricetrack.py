@@ -180,7 +180,7 @@ def today(): return dt.date.today().isoformat()
 def infer_unit(name, category):
     """Price-per-obvious-unit, kept simple: kg for weights, l for volumes,
     roll/egg/piece for counts. Returns (unit, unit_qty); ('pack', 1) if unsure."""
-    n = name.lower().replace(",", ".")
+    n = name.lower().replace(",", ".").replace("×", "x")
     if m := re.search(r"(\d+)\s*(?:ks|pcs|kusů|plenek|rolí|role)\b", n):  # a count beats a size (bags: 60L 15ks)
         q = int(m[1])
         if re.search(r"\btp\b|toalet|utěrk|rolí", n): return "roll", q
@@ -206,7 +206,7 @@ def upsert_offering(c, store_id, store_ref, name, product_id=None, url="", unit_
                    url=excluded.url, source=excluded.source, active=1,
                    product_id=COALESCE(excluded.product_id, offering.product_id),
                    need_id=COALESCE(excluded.need_id, offering.need_id),
-                   unit_qty=COALESCE(excluded.unit_qty, offering.unit_qty)""",
+                   unit_qty=excluded.unit_qty""",  # recomputed on every save; a forced qty comes via watch.qty
               (store_id, str(store_ref), source, name, product_id, need_id, url, unit_qty))
     return c.execute("SELECT id FROM offering WHERE store_id=? AND store_ref=?",
                      (store_id, str(store_ref))).fetchone()[0]

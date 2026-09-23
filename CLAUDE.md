@@ -11,6 +11,13 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   server, fetch and crawl use Bunny. `prices.db` is only a fallback (`PRICETRACK_DB=local`);
   local data was copied up once with `migrate-to-bunny` (backup: `prices.backup-*.db`).
   Latency ~15-20 ms a call; matrix ~0.3 s.
+- **Rohlík purchase history imported 2026-09-23**: all 14 orders (265 products) read from the
+  user's logged-in account (`/api/v3/orders/delivered`, `/api/v3/orders/<id>`); 259 new items,
+  each linked to its Rohlík product id (`pack_note` = how often it was ordered). Units follow
+  Rohlík's own (kg / l / ks), stated pack sizes win over price/unitPrice; avocado + lettuce
+  per piece. Needs created: Voda neperlivá, Voda perlivá, Limetky, Čerstvé mléko plnotučné,
+  Dezinfekční ubrousky, Petržel hladkolistá, Baby mrkev. No EANs yet (Rohlík has none) ->
+  next step: name search at Globus/Tesco to find barcodes, user confirms.
 - **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
   VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
 - **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):

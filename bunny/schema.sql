@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS product (
   unit      TEXT NOT NULL DEFAULT 'pack',   -- unit to compare on (overrides need's when set)
   unit_qty  REAL NOT NULL DEFAULT 1,        -- units per pack: 16 rolls, 10 eggs, 0.25 kg
   pack_note TEXT,
-  need_id   INTEGER REFERENCES need(id) ON DELETE SET NULL
+  need_id   INTEGER REFERENCES need(id) ON DELETE SET NULL,
+  search_query TEXT                         -- what to search the stores with (e.g. Czech) when
+                                            -- the display name is in another language; NULL = name
 );
 
 CREATE TABLE IF NOT EXISTS offering (

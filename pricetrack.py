@@ -262,6 +262,8 @@ def init():
     c = conn(); c.executescript(SCHEMA.read_text(encoding="utf-8"))
     if "packs" not in [r["name"] for r in c.execute("PRAGMA table_info(watch)")]:
         c.execute("ALTER TABLE watch ADD COLUMN packs TEXT")
+    if "search_query" not in [r["name"] for r in c.execute("PRAGMA table_info(product)")]:
+        c.execute("ALTER TABLE product ADD COLUMN search_query TEXT")
     c.execute("DELETE FROM offering WHERE source='kupi'")  # Kupi lives in `deal` now
     c.executemany("""INSERT INTO store(id,name,url,prices_ex_vat) VALUES (?,?,?,?)
                      ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url,
@@ -1149,7 +1151,7 @@ def match(src, ean=None, need=None, query=None, pick=None, qty=None):
     finally:
         c.close()
     target = product or need_row
-    cands = search(src, query or default_query(target["name"]))
+    cands = search(src, query or (search_text(target) if ean else default_query(target["name"])))
     if not cands: return
     if pick is None:
         raw = input(f"\nWhich is '{target['name']}'?  number, or blank to skip: ").strip()
@@ -1159,6 +1161,11 @@ def match(src, ean=None, need=None, query=None, pick=None, qty=None):
     offers = link(src, cd["ref"], ean, need, qty, cd["name"])
     print(f"matched {target['name']} -> {src}:{cd['ref']} ({cd['name']}), "
           f"{len(offers)} offer(s): " + "; ".join(fmt_offer(o) for o in offers[:4]))
+
+def search_text(p):
+    """What to search the stores with for an item: its search_query, else its display name."""
+    q = p["search_query"] if "search_query" in p.keys() else None
+    return default_query(q or p["name"])
 
 def default_query(name):
     """Receipt name -> search text the stores understand: drop Makro house-brand codes,
@@ -1217,17 +1224,18 @@ def _tokens(s):
 def ean_score(product, cand_name, cand_amount):
     """0..~1.35: share of our name's words found in the candidate, +0.25 when the pack size
     agrees (-0.25 when it clearly doesn't), -0.4 when the brand (first word) is missing."""
-    want = _tokens(default_query(product["name"]))
+    want = _tokens(search_text(product))
     if not want: return 0.0
     got = _tokens(cand_name)
     score = len(want & got) / len(want)
-    brand = _tokens(re.sub(r"^(rohlik\.cz|bio)\s+", "", product["name"], flags=re.I).split()[0])
+    brand = _tokens(re.sub(r"^(rohlik\.cz|bio)\s+", "", search_text(product), flags=re.I).split()[0])
     if brand and not brand & got: score -= 0.4
     pct = lambda n: set(re.findall(r"(\d+(?:[.,]\d+)?)\s*%", n.replace(",", ".")))
-    if pct(product["name"]) and pct(cand_name) and not pct(product["name"]) & pct(cand_name):
+    ours = product["search_query"] or product["name"]
+    if pct(ours) and pct(cand_name) and not pct(ours) & pct(cand_name):
         score -= 0.4                                  # 0 % vs 5 % yogurt: a different product
     own = re.match(r"(tesco|globus|váš výběr|vas vyber|k-classic|clever|billa)\b", cand_name.strip(), re.I)
-    if own and not re.match(re.escape(own[1]), product["name"].strip(), re.I):
+    if own and not re.match(re.escape(own[1]), (product["search_query"] or product["name"]).strip(), re.I):
         score -= 0.4                                  # a chain's own brand only fits that chain
     unit, qty = infer_unit(f"{cand_name} {cand_amount}", None)
     same = unit == product["unit"] or {unit, product["unit"]} == {"kg", "l"}  # 450 g kefír = 450 ml
@@ -1239,7 +1247,7 @@ def ean_score(product, cand_name, cand_amount):
 def ean_candidates(product, per_source=3, min_score=0.6):
     """Search the EAN-returning stores by name; best-scoring hits that carry an EAN."""
     out = []
-    q = default_query(product["name"])
+    q = search_text(product)
     queries = [q] + ([" ".join(q.split()[:3])] if len(q.split()) > 3 else [])
     for name in EAN_SOURCES:
         src, hits = source(name), []
@@ -1294,20 +1302,25 @@ def ean_dismiss(product_id):
     c.commit(); c.close()
 
 # ---------------------------------------------------------------- products (add / edit / delete)
-PRODUCT_FIELDS = ("ean", "name", "category", "vat_pct", "unit", "unit_qty", "pack_note")
+PRODUCT_FIELDS = ("ean", "name", "category", "vat_pct", "unit", "unit_qty", "pack_note", "search_query")
 
-def product_add(name, category=None, vat_pct=None, ean=None, unit=None, unit_qty=None, pack_note=None):
-    """New item to track. Unit + units-per-pack are inferred from the name unless given."""
+def product_add(name, category=None, vat_pct=None, ean=None, unit=None, unit_qty=None, pack_note=None,
+                search_query=None):
+    """New item to track. Unit + units-per-pack are inferred from the name (or the search text,
+    which usually carries the pack size) unless given."""
     name = (name or "").strip()
     if not name: raise ValueError("name is required")
+    search_query = (search_query or "").strip() or None
     u, q = infer_unit(name, category)
+    if u == "pack" and search_query: u, q = infer_unit(search_query, category)
     c = conn()
     try:
-        cur = c.execute("""INSERT INTO product(ean,name,category,vat_pct,unit,unit_qty,pack_note)
-                           VALUES (?,?,?,?,?,?,?)""",
+        cur = c.execute("""INSERT INTO product(ean,name,category,vat_pct,unit,unit_qty,pack_note,search_query)
+                           VALUES (?,?,?,?,?,?,?,?)""",
                         ((ean or "").strip() or None, name, category or None,
                          int(vat_pct) if vat_pct not in (None, "") else None,
-                         unit or u, float(unit_qty) if unit_qty not in (None, "") else q, pack_note))
+                         unit or u, float(unit_qty) if unit_qty not in (None, "") else q, pack_note,
+                         search_query))
         c.commit()
         return cur.lastrowid
     except sqlite3.IntegrityError:
@@ -1316,12 +1329,22 @@ def product_add(name, category=None, vat_pct=None, ean=None, unit=None, unit_qty
         c.close()
 
 def product_update(pid, **fields):
+    """Edit an item. Empty clears ean / search_query / category / pack_note; empty name, unit,
+    unit_qty or VAT are ignored. Renaming an item that has no search text keeps the old name as
+    its search text, so e.g. an English display name still searches the stores in Czech."""
     sets = {k: v for k, v in fields.items() if k in PRODUCT_FIELDS}
-    if "ean" in sets: sets["ean"] = (sets["ean"] or "").strip() or None
+    for k in ("name", "unit", "unit_qty", "vat_pct"):
+        if k in sets and str(sets[k]).strip() == "": del sets[k]
+    for k in ("ean", "search_query", "category", "pack_note"):
+        if k in sets: sets[k] = (sets[k] or "").strip() or None
     if "unit_qty" in sets: sets["unit_qty"] = float(sets["unit_qty"])
-    if "vat_pct" in sets: sets["vat_pct"] = int(sets["vat_pct"]) if sets["vat_pct"] not in (None, "") else None
+    if "vat_pct" in sets: sets["vat_pct"] = int(sets["vat_pct"])
     if not sets: return
     c = conn()
+    old = c.execute("SELECT name, search_query FROM product WHERE id=?", (pid,)).fetchone()
+    if old and "name" in sets and sets["name"] != old["name"] and not sets.get("search_query") \
+            and not old["search_query"]:
+        sets["search_query"] = old["name"]
     try:
         c.execute(f"UPDATE product SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
                   (*sets.values(), pid))
@@ -1355,7 +1378,7 @@ def suggest(product_id):
         by_name = getattr(cls, "ean_via_name", False)  # no EAN search, but results carry the EAN
         if not (getattr(cls, "ean_search", False) or by_name): continue
         try:
-            cands = cls().search(default_query(p["name"]) if by_name else p["ean"])
+            cands = cls().search(search_text(p) if by_name else p["ean"])
         except Exception as e:
             print(f"  [suggest {name}] {e}"); continue
         for cd in cands:
@@ -1604,7 +1627,7 @@ def products_status():
                                            WHERE product_id IS NOT NULL ORDER BY price_incl""")]
     c.close()
     for p in prods:
-        p["query"] = default_query(p["name"])
+        p["query"] = search_text(p)
         p["ean_candidates"] = ecand.get(p["id"], []) if not p["ean"] else []
         p["matches"] = []
         for w in (w for w in watches if w["product_id"] == p["id"]):

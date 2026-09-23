@@ -177,3 +177,4 @@
   .saved li .x{all:unset;cursor:pointer;color:var(--muted);font-size:1.1rem;padding:0 .3rem}
   .viewbar{align-items:center}
   .viewbar #viewing{margin-right:auto}
+  .fields .hint{font-style:italic;opacity:.8}

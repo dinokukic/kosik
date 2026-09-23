@@ -68,6 +68,10 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   one-click Link / Link all. Globus fuzzes EANs and Košík doesn't echo them back, so hits
   are exact-matched where possible and Košík's pack is shown for the user to check.
 - Unlinking a store's live price brings back that store's hand-entered price.
+- **Display name vs search text**: `product.search_query` (optional) is what stores are
+  searched with (the user names items in English, stores need Czech); `search_text(p)` =
+  search_query or name, used by match searches, the Tesco barcode lookup and find-eans
+  (incl. scoring). Renaming an item with no search text keeps the old name as search text.
 - **Items can be added / edited / deleted in the UI** (match screen → "Add an item"; barcode
   lookup via Makro prefills name + EAN). New items live in the DB only; `watchlist.csv` is
   just the original seed.

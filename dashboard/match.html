@@ -49,7 +49,9 @@
 function itemForm(p={}, prefix="add"){
   const units = ["kg","l","roll","egg","piece","pack"];
   return `<div class="fields">
-    <label class="wide">name<input data-f="name" value="${esc(p.name)}" placeholder="Nutella 600g"></label>
+    <label class="wide">name (shown everywhere)<input data-f="name" value="${esc(p.name)}" placeholder="Butter 250 g"></label>
+    <label class="wide">search stores as <span class="hint">optional, e.g. in Czech; empty = the name</span>
+      <input data-f="search_query" value="${esc(p.search_query)}" placeholder="jihočeské máslo 250 g"></label>
     <label>barcode (EAN)<input data-f="ean" value="${esc(p.ean)}" inputmode="numeric" placeholder="optional"></label>
     <label>category<input data-f="category" list="cats" value="${esc(p.category)}" placeholder="dairy"></label>
     <label>VAT<select data-f="vat_pct">${[12,21,0].map(v=>`<option value="${v}" ${(p.vat_pct??12)==v?'selected':''}>${v} %</option>`).join("")}</select></label>
@@ -57,9 +59,9 @@ function itemForm(p={}, prefix="add"){
     <label>units in pack<input data-f="unit_qty" type="number" step="any" min="0" value="${p.unit_qty??''}" placeholder="auto"></label>
   </div>`;
 }
-function readForm(el){
+function readForm(el, all=false){  // all: also send empty fields (edit can clear a barcode / search text)
   const o = {};
-  el.querySelectorAll("[data-f]").forEach(x=>{ if(x.value!=="") o[x.dataset.f] = x.value; });
+  el.querySelectorAll("[data-f]").forEach(x=>{ if(all || x.value!=="") o[x.dataset.f] = x.value; });
   return o;
 }
 const $ = id => document.getElementById(id);
@@ -118,7 +120,7 @@ function render(){
     return `<details class="prod" data-id="${p.id}" ${open.includes(String(p.id))?'open':''}>
       <summary><span class="nm">${esc(p.name)}</span>
         <span class="badges">${badges}</span>
-        <span class="sub">${esc(p.category)} · per ${esc(p.unit)} (${+p.unit_qty} in the receipt pack)${p.need_name?' · need: '+esc(p.need_name):''}</span>
+        <span class="sub">${esc(p.category)} · per ${esc(p.unit)} (${+p.unit_qty} in the receipt pack)${p.need_name?' · need: '+esc(p.need_name):''}${p.search_query?' · searches “'+esc(p.search_query)+'”':''}</span>
       </summary>
       <div class="panel" id="panel-${p.id}"></div>
     </details>`;
@@ -242,8 +244,11 @@ function renderPanel(pid){
     pick(pid, st.results[i], boxes.length && chosen.length < boxes.length ? chosen : null);
   });
   el.querySelector("[data-save]").onclick = () => run(pid, "Saving…", async st=>{
-    await api("product/update", {id: +pid, ...readForm(el.querySelector(".edit"))});
-    st.msg = "Saved."; await reloadProducts(true);
+    await api("product/update", {id: +pid, ...readForm(el.querySelector(".edit"), true)});
+    await reloadProducts(true);
+    const q = PRODUCTS.find(x=>x.id==pid)?.query;
+    Object.assign(state(pid), {msg: "Saved.", results: null, suggest: undefined});
+    if(q) state(pid).query = q;
   });
   el.querySelector("[data-del]").onclick = async () => {
     if(!confirm(`Delete "${p.name}" and everything matched to it?`)) return;
@@ -343,7 +348,9 @@ async function lookupGo(){
       : `<li class="status">Makro doesn't know it. Fill the fields in yourself.</li>`;
     $("lookupRes").querySelectorAll("[data-use]").forEach(b=>b.onclick=()=>{
       const r = d.results[+b.dataset.use], f = $("addFields");
-      f.querySelector('[data-f="name"]').value = r.name.replace(/\s+chlaz\.|\s+mraž\./g,"");
+      const cz = r.name.replace(/\s+chlaz\.|\s+mraž\./g,"");
+      if(!f.querySelector('[data-f="name"]').value) f.querySelector('[data-f="name"]').value = cz;
+      f.querySelector('[data-f="search_query"]').value = cz;
       f.querySelector('[data-f="ean"]').value = r.ean;
       $("lookupRes").innerHTML = "";
     });

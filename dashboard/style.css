@@ -178,3 +178,6 @@
   .viewbar{align-items:center}
   .viewbar #viewing{margin-right:auto}
   .fields .hint{font-style:italic;opacity:.8}
+  .reshead{display:flex;flex-wrap:wrap;gap:.5rem .8rem;align-items:center;margin:.2rem 0 .6rem;font-size:.8rem;color:var(--muted)}
+  .reshead .rfilter{flex:1 1 12rem;min-width:0;padding:.28rem .55rem;border:1px solid var(--line);border-radius:.4rem;
+    background:transparent;color:var(--ink)}

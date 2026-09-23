@@ -105,6 +105,10 @@ function offerChip(o){
 
 function render(){
   const open = [...document.querySelectorAll("details.prod[open]")].map(d=>d.dataset.id);
+  const drafts = {};  // an open edit form survives a full redraw
+  document.querySelectorAll("details.prod[open] details.edit[open]").forEach(ed=>{
+    drafts[ed.closest("details.prod").dataset.id] = readForm(ed, true);
+  });
   const isMatched = p => p.matches.length>0;
   let list = [...PRODUCTS];
   const order = $("order").value;
@@ -128,6 +132,11 @@ function render(){
   document.querySelectorAll("details.prod").forEach(d=>{
     d.addEventListener("toggle", ()=>{ if(d.open) openPanel(d.dataset.id); });
     if(d.open) renderPanel(d.dataset.id);
+    const draft = drafts[d.dataset.id], ed = d.querySelector("details.edit");
+    if(draft && ed){
+      ed.open = true;
+      Object.entries(draft).forEach(([k,v])=>{ const f = ed.querySelector(`[data-f="${k}"]`); if(f) f.value = v; });
+    }
   });
 }
 
@@ -194,9 +203,30 @@ function packChooser(c, i){
     `<label><input type="checkbox" data-pack="${i}" value="${esc(k)}" checked> ${esc(label)}</label>`).join("")}</span>`;
 }
 
+// The panel = a fixed part (edit form, built once so typing in it survives) + a live part
+// (matches, barcode blocks, search, results) that is redrawn as results arrive.
 function renderPanel(pid){
   const p = PRODUCTS.find(x=>x.id==pid), st = state(pid), el = $("panel-"+pid);
   if(!el) return;
+  if(!el.querySelector(":scope > .live")){
+    el.innerHTML = `<details class="edit"><summary>Edit item</summary>${itemForm(p)}
+        <div class="searchrow"><button class="btn ghost" data-save>Save</button>
+          <button class="btn ghost danger" data-del>Delete item</button></div></details>
+      <div class="live"></div>`;
+    el.querySelector("[data-save]").onclick = () => run(pid, "Saving…", async st=>{
+      await api("product/update", {id: +pid, ...readForm(el.querySelector(".edit"), true)});
+      await reloadProducts(true);
+      const q = PRODUCTS.find(x=>x.id==pid)?.query;
+      Object.assign(state(pid), {msg: "Saved.", results: null, suggest: undefined});
+      if(q) state(pid).query = q;
+    });
+    el.querySelector("[data-del]").onclick = async () => {
+      const cur = PRODUCTS.find(x=>x.id==pid);
+      if(!confirm(`Delete "${cur.name}" and everything matched to it?`)) return;
+      await api("product/delete", {id: +pid}); await reloadProducts(true);
+    };
+  }
+  const live = el.querySelector(":scope > .live");
   const matched = p.matches.map(m=>`<li><span class="src">${esc(SRC[m.source]||m.source)}</span>
       <span>${esc(m.name)}</span>
       <span>${m.offers.length ? m.offers.map(o=>offerChip({...o, amount:""})).join(" ")
@@ -205,9 +235,18 @@ function renderPanel(pid){
   const manual = p.manual.length ? `<li><span class="src">hand-entered</span>
       <span>${p.manual.map(o=>offerChip({...o, amount:""})).join(" ")}</span></li>` : "";
   const taken = new Set(p.matches.filter(m=>m.source===st.source).map(m=>m.ref));
+  // results: filter words must all appear in the name / pack / offers; keep original indexes
+  const words = (st.filter||"").toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = c => (c.name + " " + c.offers.map(o=>`${o.amount} ${o.store_name}`).join(" ")).toLowerCase();
+  const shown = (st.results||[]).map((c,i)=>[c,i]).filter(([c])=>words.every(w=>hay(c).includes(w)));
+  const head = st.results && st.results.length ? `<div class="reshead">
+      <span>${words.length ? `${shown.length} of ${st.results.length} shown` : `${st.results.length} results`}</span>
+      <input type="search" class="rfilter" placeholder="filter results, e.g. 6x  1,5" value="${esc(st.filter||"")}" aria-label="filter results">
+      ${st.results.length >= (st.n||60) && (st.n||60) < 150 ? `<button class="btn ghost" data-more ${st.busy?'disabled':''}>Show more</button>` : ""}
+    </div>` : "";
   const results = st.results===null ? "" : !st.results.length
     ? `<p class="status">Nothing found. Try fewer words (brand + product), no sizes.</p>`
-    : `<ul class="cands">${st.results.map((c,i)=>`<li class="cand">
+    : head + `<ul class="cands">${shown.map(([c,i])=>`<li class="cand">
         <span class="cn">${esc(c.name)}</span>
         ${packChooser(c, i)}
         <span class="offers">${c.offers.length ? c.offers.map(offerChip).join("")
@@ -215,52 +254,46 @@ function renderPanel(pid){
         ${taken.has(c.ref) ? '<button class="btn ghost" disabled>Matched</button>'
                            : `<button class="btn" data-pick="${i}" ${st.busy?'disabled':''}>This one</button>`}
       </li>`).join("")}</ul>`;
-  el.innerHTML = `
+  const hadFocus = document.activeElement?.classList.contains("rfilter") && live.contains(document.activeElement);
+  live.innerHTML = `
     ${matched||manual ? `<ul class="matched">${matched}${manual}</ul>` : ""}
-    <details class="edit"><summary>Edit item</summary>${itemForm(p)}
-      <div class="searchrow"><button class="btn ghost" data-save>Save</button>
-        <button class="btn ghost danger" data-del>Delete item</button></div></details>
     ${eanBlock(pid)}
     ${suggestBlock(pid)}
     <div class="searchrow">
       <span class="seg">${SOURCES.map(s=>`<button data-src="${s}" aria-pressed="${s===st.source}">${SRC[s]||s}</button>`).join("")}</span>
-      <input type="search" value="${esc(st.query)}" aria-label="search text">
+      <input type="search" class="q" value="${esc(st.query)}" aria-label="search text">
       <button class="btn ghost" data-go ${st.busy?'disabled':''}>Search</button>
     </div>
     <p class="status ${st.err?'err':''}">${esc(st.msg)}</p>
     ${results}`;
-  const input = el.querySelector("input");
+  const input = live.querySelector("input.q");
   input.oninput = () => { st.query = input.value; };
   input.onkeydown = e => { if(e.key==="Enter") search(pid); };
-  el.querySelector("[data-go]").onclick = () => search(pid);
-  el.querySelectorAll("[data-src]").forEach(b=>b.onclick=()=>{
-    st.source = b.dataset.src; st.results = null;
+  const rf = live.querySelector(".rfilter");
+  if(rf){
+    rf.oninput = () => { st.filter = rf.value; const pos = rf.selectionStart; renderPanel(pid);
+                         const nf = live.querySelector(".rfilter"); nf.focus(); nf.setSelectionRange(pos, pos); };
+    if(hadFocus) rf.focus();
+  }
+  live.querySelector("[data-more]")?.addEventListener("click", ()=>{ st.n = Math.min((st.n||60) * 2, 150); search(pid); });
+  live.querySelector("[data-go]").onclick = () => search(pid);
+  live.querySelectorAll("[data-src]").forEach(b=>b.onclick=()=>{
+    st.source = b.dataset.src; st.results = null; st.n = 60;
     if(st.source!=="makro" && /^\d{8,14}$/.test(st.query)) st.query = p.query;  // only Makro takes barcodes
     search(pid); });
-  el.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{
-    const i = +b.dataset.pick, boxes = [...el.querySelectorAll(`[data-pack="${i}"]`)];
+  live.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{
+    const i = +b.dataset.pick, boxes = [...live.querySelectorAll(`[data-pack="${i}"]`)];
     const chosen = boxes.filter(x=>x.checked).map(x=>x.value);
     if(boxes.length && !chosen.length){ state(pid).msg = "Tick at least one size."; return renderPanel(pid); }
     pick(pid, st.results[i], boxes.length && chosen.length < boxes.length ? chosen : null);
   });
-  el.querySelector("[data-save]").onclick = () => run(pid, "Saving…", async st=>{
-    await api("product/update", {id: +pid, ...readForm(el.querySelector(".edit"), true)});
-    await reloadProducts(true);
-    const q = PRODUCTS.find(x=>x.id==pid)?.query;
-    Object.assign(state(pid), {msg: "Saved.", results: null, suggest: undefined});
-    if(q) state(pid).query = q;
-  });
-  el.querySelector("[data-del]").onclick = async () => {
-    if(!confirm(`Delete "${p.name}" and everything matched to it?`)) return;
-    await api("product/delete", {id: +pid}); await reloadProducts(true);
-  };
-  el.querySelectorAll("[data-useean]").forEach(b=>b.onclick=()=>useEan(pid, p.ean_candidates[+b.dataset.useean]));
-  el.querySelector("[data-eannone]")?.addEventListener("click", ()=>run(pid, "Noted.", async st=>{
+  live.querySelectorAll("[data-useean]").forEach(b=>b.onclick=()=>useEan(pid, p.ean_candidates[+b.dataset.useean]));
+  live.querySelector("[data-eannone]")?.addEventListener("click", ()=>run(pid, "Noted.", async st=>{
     await api("eans/dismiss", {product_id: +pid}); st.msg = "No barcode for this one."; await reloadProducts();
   }));
-  el.querySelectorAll("[data-sug]").forEach(b=>b.onclick=()=>linkSuggested(pid, [st.suggest[+b.dataset.sug]]));
-  el.querySelector("[data-linkall]")?.addEventListener("click", ()=>linkSuggested(pid, [...st.suggest]));
-  el.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
+  live.querySelectorAll("[data-sug]").forEach(b=>b.onclick=()=>linkSuggested(pid, [st.suggest[+b.dataset.sug]]));
+  live.querySelector("[data-linkall]")?.addEventListener("click", ()=>linkSuggested(pid, [...st.suggest]));
+  live.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
     const [source, ref] = b.dataset.unlink.split("|"); unpick(pid, source, ref); });
 }
 
@@ -274,7 +307,7 @@ async function run(pid, msg, fn){
 
 function search(pid){
   return run(pid, "Searching…", async st=>{
-    const d = await api(`search?source=${encodeURIComponent(st.source)}&q=${encodeURIComponent(st.query)}`);
+    const d = await api(`search?source=${encodeURIComponent(st.source)}&q=${encodeURIComponent(st.query)}&n=${st.n||60}`);
     st.results = d.candidates; st.msg = "";
   });
 }
@@ -371,15 +404,18 @@ $("addGo").onclick = async ()=>{
   }catch(e){ $("addStatus").textContent = e.message; $("addStatus").classList.add("err"); }
 };
 // Long jobs run in the server; poll their log. name = crawl | eans
+const JOB_SEEN_RUNNING = {};
 async function pollJob(name, label){
   const d = await api(name).catch(()=>null);
   if(!d) return;
   const last = d.log.trim().split("\n").pop() || "";
   $(name).disabled = d.running;
-  if(d.running) $("gstatus").textContent = `${label}… ${last.trim()}`;
-  else if(/done/.test(last)) $("gstatus").textContent = last.trim();
-  if(d.running) setTimeout(()=>pollJob(name, label), 4000);
-  else if(/done/.test(last)) reloadProducts(true);
+  if(d.running){ JOB_SEEN_RUNNING[name] = true; $("gstatus").textContent = `${label}… ${last.trim()}`;
+                 return setTimeout(()=>pollJob(name, label), 4000); }
+  // reload only when the job finished while this page was open (not for an old finished run)
+  if(JOB_SEEN_RUNNING[name] && /done/.test(last)){
+    JOB_SEEN_RUNNING[name] = false; $("gstatus").textContent = last.trim(); reloadProducts(true);
+  }
 }
 $("crawl").onclick = async ()=>{ await api("crawl", {}); pollJob("crawl", "Crawling Kupi"); };
 $("eans").onclick = async ()=>{ await api("eans", {}); pollJob("eans", "Finding barcodes"); };

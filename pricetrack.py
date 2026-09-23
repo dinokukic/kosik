@@ -378,8 +378,8 @@ class Rohlik:
                     club=None, note=None, ref="")
 
     def search(self, query, n=12):
-        ids = self._get("/services/frontend-service/autocomplete",
-                        {"search": query, "referer": "whisperer", "companyId": 1}
+        ids = self._get("/services/frontend-service/autocomplete",   # limit: default is only 8
+                        {"search": query, "referer": "whisperer", "companyId": 1, "limit": n}
                         ).get("productIds", [])[:n]
         return [dict(ref=o["store_ref"], name=o["name"], url=o["url"], offers=[o])
                 for o in map(self._offer, self._cards(ids)) if o]
@@ -486,7 +486,7 @@ class Kupi:
                 out += self._finish(slug, name, rows.get(pid, []))
         return out
 
-    def search(self, query):
+    def search(self, query, n=None):  # one results page (~20 products); n is ignored
         page = http_get(f"{self.BASE}/hledej", {"f": query}, json=False)
         rows, prods = self._rows(page), self._products(page)
         return [dict(ref=slug, name=name, url=f"{self.BASE}/sleva/{slug}",
@@ -531,11 +531,13 @@ class Makro:
                              rows=rows, page=1), self.UAH)
 
     def _variants(self, ids):
-        if not ids: return {}
-        params = [("storeIds", self.STORE), ("country", "CZ"), ("locale", "cs-CZ")] + \
-                 [("ids", i) for i in ids]
-        return http_get(f"{self.BASE}/evaluate.article.v1/betty-variants", params, self.UAH
-                        ).get("result", {})
+        out = {}
+        for i in range(0, len(ids), 20):  # the endpoint rejects long id lists (60 -> HTTP 400)
+            params = [("storeIds", self.STORE), ("country", "CZ"), ("locale", "cs-CZ")] + \
+                     [("ids", x) for x in ids[i:i + 20]]
+            out.update(http_get(f"{self.BASE}/evaluate.article.v1/betty-variants", params, self.UAH
+                                ).get("result", {}))
+        return out
 
     def _bundles(self, ids, prices):
         """[(ean, description, pieces, food, net_price_or_None)] for the given variant ids."""
@@ -561,11 +563,11 @@ class Makro:
                     price_net=net, food=food, is_promo=False, valid_from=None, promo_until=None,
                     club=None, note=None, ref="")
 
-    def search(self, query):
-        res = self._search(query).get("results", {})
+    def search(self, query, n=12):
+        res = self._search(query, rows=n).get("results", {})
         prices = {k: v.get("price") for k, v in res.items()}
         cands = []
-        for ean, desc, n, food, net in self._bundles(list(res)[:10], prices):
+        for ean, desc, _, food, net in self._bundles(list(res)[:n], prices):
             # VAT depends on the item (Makro's 'food' flag is not the VAT class: diapers are
             # 'food'), so candidates show the net price; save_offers adds the item's VAT.
             offers = [dict(self._offer(ean, desc, net, food), price_incl=net, amount="bez DPH")] \
@@ -1695,6 +1697,11 @@ def serve(port):
                 self._json({"error": "bad host"}, 403); return False
             return True
 
+        def end_headers(self):
+            if not self.path.startswith("/api/"):  # pages change with updates: always revalidate
+                self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
         def log_message(self, fmt, *args):
             if self.path.startswith("/api/"): super().log_message(fmt, *args)
 
@@ -1726,7 +1733,8 @@ def serve(port):
                 if u.path == "/api/lookup":
                     return self._json(dict(results=lookup(q["q"])))
                 if u.path == "/api/search":
-                    return self._json(dict(candidates=source(q["source"]).search(q["q"])))
+                    n = max(1, min(int(q.get("n", 60)), 150))
+                    return self._json(dict(candidates=source(q["source"]).search(q["q"], n), n=n))
                 self._json({"error": "not found"}, 404)
             except Exception as e:
                 traceback.print_exc(); self._json({"error": str(e)}, 500)

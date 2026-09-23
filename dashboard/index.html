@@ -9,7 +9,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Košík<small>every store's price per unit — cheapest per row marked</small></h1>
+    <h1>Košík<small>shelf prices across stores — cheapest per unit marked</small></h1>
     <nav><a href="./" aria-current="page">Matrix</a><a href="match.html">Match</a><a href="list.html" id="navList">List</a></nav>
   </header>
   <div class="meta" id="meta"></div>
@@ -18,7 +18,7 @@
   <p class="note" id="note"></p>
 </div>
 <script>
-const CZK = n => n.toLocaleString("cs-CZ",{maximumFractionDigits:n<100?2:0}) + " Kč";
+const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:Number.isInteger(n)?0:2, maximumFractionDigits:2}) + " Kč";
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let DATA=null, CAT="all", LIVE=false;  // LIVE = served by pricetrack.py (list works)
 
@@ -28,8 +28,8 @@ function apply(d){
     "Updated " + d.generated.replace("T"," ") + " · " + d.rows.length + " rows × " + d.stores.length + " stores";
   buildFilters(); render();
   document.getElementById("note").textContent =
-    "Cells show price per unit (per kg, l, roll, egg, piece or pack), VAT included, from each store's "
-    + "latest capture; the pack price is underneath. Green = cheapest in the row. akce = promo, often time-limited; requires card = loyalty-card price "
+    "Cells show the shelf price (VAT included) with pack size and price per unit underneath. "
+    + "Green = cheapest per unit in the row, so different pack sizes compare fairly. akce = promo, often time-limited; requires card = loyalty-card price "
     + "(hover for which card). Store columns come from the stores directly; the flyer column is the best current "
     + "flyer deal across all chains, found by the weekly kupi.cz crawl. "
     + (LIVE ? "Tap a price to put that item on your shopping list at that store (tap again to take it off; "
@@ -60,6 +60,22 @@ function buildFilters(){
   document.querySelectorAll("#filters button").forEach(b=>b.onclick=()=>{
     CAT=b.dataset.c; buildFilters(); render();});
 }
+// Pack size + per-unit line under the shelf price: "200 g · 145 Kč/kg".
+const UNIT = {kg:"kg", l:"l", piece:"ks", roll:"roll", egg:"egg", pack:"pack"};
+function packLabel(q, unit){
+  if(!q || unit==="pack") return "";
+  const n = x => (+x.toFixed(3)).toLocaleString("cs-CZ");
+  if(unit==="kg") return q < 1 ? `${n(q*1000)} g` : `${n(q)} kg`;
+  if(unit==="l") return q < 1 ? `${n(q*1000)} ml` : `${n(q)} l`;
+  if(unit==="piece") return `${n(q)} ks`;
+  return `${n(q)} ${unit}${q==1?'':'s'}`;
+}
+function unitLine(price, unitPrice, q, unit, amount){
+  if(unit==="pack") return amount ? esc(amount) : "";
+  const pack = amount ? esc(amount) : packLabel(q, unit);
+  const per = q && q != 1 ? `${CZK(unitPrice)}/${UNIT[unit]||unit}` : "";
+  return [pack, per].filter(Boolean).join(" · ");
+}
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
 // Best current flyer deal for the row (Kupi aggregates chain flyers; not a store column).
 function inCart(r, store, kind){ const c = DATA.cart?.[r.key]; return !!c && c.store_id===store && c.kind===kind; }
@@ -77,10 +93,11 @@ function flyerCell(r){
   const d = r.deal;
   if(!d) return `<td class="flyer empty">·</td>`;
   const card = d.club ? `<span class="pill club" title="${esc(d.club)}">requires card</span>` : "";
-  const perPack = r.unit!=="pack" ? ` · ${CZK(d.price_incl)}${d.amount?'/'+esc(d.amount):''}` : "";
+  const line = unitLine(d.price_incl, d.unit_price, d.price_incl/d.unit_price, r.unit, d.amount);
   return cellHtml(r, d.store_id, "flyer", `flyer ${d.is_cheapest?'win':''}`,
     [d.product_name, d.club, d.note].filter(Boolean).join(' · '),
-    `<b>${CZK(d.unit_price)}</b>${card}<span class="tot">${esc(d.store_name||d.store_id)}${perPack}${d.valid_to?' · do '+dm(d.valid_to):''}</span>`,
+    `<b>${CZK(d.price_incl)}</b>${card}<span class="tot">${esc(d.store_name||d.store_id)}${d.valid_to?' · do '+dm(d.valid_to):''}</span>`
+      + (line ? `<span class="tot">${line}</span>` : ""),
     d.url);
 }
 
@@ -96,17 +113,18 @@ function render(){
     const tds = stores.map(s=>{
       const c=r.cells[s.id];
       if(!c) return `<td class="empty">·</td>`;
-      const perPack = r.unit!=="pack" ? `<span class="tot">${CZK(c.price_incl)}</span>` : "";
+      const line = unitLine(c.price_incl, c.unit_price, c.unit_qty, r.unit, "");
+      const perPack = line ? `<span class="tot">${line}</span>` : "";
       const promo = (c.is_promo ? `<span class="pill" title="${c.promo_until?'do '+esc(c.promo_until):''}">akce</span>` : "")
         + (c.club ? `<span class="pill club" title="${esc(c.club)}">requires card</span>` : "");
       return cellHtml(r, s.id, "store", c.is_cheapest?'win':'',
         [c.offering_name, c.club, c.note, 'via '+c.source+' · '+c.ts].filter(Boolean).join(' · '),
-        `<b>${CZK(c.unit_price)}</b>${promo}${perPack}`, c.url);
+        `<b>${CZK(c.price_incl)}</b>${promo}${perPack}`, c.url);
     }).join("");
     const ci = LIVE && DATA.cart?.[r.key];
     const where = ci ? `<div class="onlist">on list · ${esc((DATA.stores.find(s=>s.id===ci.store_id)||{}).name
                         || (r.deal && r.deal.store_id===ci.store_id && r.deal.store_name) || ci.store_id)}${ci.kind==='flyer'?' (flyer)':''}</div>` : "";
-    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">per ${esc(r.unit)}</div>${where}</td>`
+    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">${r.unit==="pack" ? "compared per pack" : "compared per "+esc(UNIT[r.unit]||r.unit)}</div>${where}</td>`
       + `${flyerCell(r)}${tds}</tr>`;
   }).join("");
   const keepX = document.querySelector("#list .scroll")?.scrollLeft || 0;

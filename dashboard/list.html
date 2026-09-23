@@ -14,20 +14,31 @@
   </header>
   <div class="printhead" id="printhead"></div>
   <div class="meta" id="meta"></div>
+  <div class="toolbar noprint viewbar" id="viewbar" hidden>
+    <span id="viewing"></span>
+    <button class="btn ghost" id="back">← Back to current list</button>
+    <button class="btn" id="printSaved">Print</button>
+    <button class="btn ghost" id="reuseSaved">Use again</button>
+  </div>
   <div class="toolbar noprint" id="toolbar" hidden>
     <button class="btn" id="print">Print</button>
+    <button class="btn ghost" id="save">Save list &amp; start new</button>
     <button class="btn ghost" id="clearChecked">Remove ticked</button>
     <button class="btn ghost danger" id="clearAll">Clear list</button>
     <span class="status" id="status"></span>
   </div>
   <div id="stores"></div>
+  <section class="saved noprint" id="saved" hidden>
+    <h2>Saved lists</h2>
+    <ul id="savedList"></ul>
+  </section>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
-let ITEMS = [];
+let ITEMS = [], VIEW = null;  // VIEW = a saved list being looked at (read-only), else the current list
 
 async function api(path, body){
   const r = await fetch("api/"+path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
@@ -38,14 +49,14 @@ async function api(path, body){
 }
 
 async function load(){
-  try{ ITEMS = (await api("cart")).items; render(); }
+  try{ ITEMS = (await api("cart")).items; VIEW = null; render(); loadSaved(); }
   catch(e){
     $("stores").innerHTML = `<div class="loader">Couldn't reach the local server (${esc(e.message)}).<br>
       Start it with <code>python3 pricetrack.py serve</code> and open <code>localhost:8765/list.html</code>.</div>`;
   }
 }
 
-function line(it){
+function line(it, ro){
   const price = it.price_incl ?? 0;
   const changed = it.current_price != null && Math.abs(it.current_price - price) > 0.005;
   const gone = it.current_price == null;
@@ -55,41 +66,46 @@ function line(it){
     it.club ? "requires card" : "",
     it.note && it.kind !== "flyer" ? it.note : "",
   ].filter(Boolean);
-  const drift = gone ? `<span class="drift">no longer listed at this price</span>`
+  const drift = ro ? "" : gone ? `<span class="drift">no longer listed at this price</span>`
     : changed ? `<span class="drift">now ${CZK(it.current_price)}</span>` : "";
   return `<li class="item ${it.checked?'done':''}">
-    <label class="tick"><input type="checkbox" data-check="${it.id}" ${it.checked?'checked':''}>
+    <label class="tick"><input type="checkbox" ${ro?'':`data-check="${it.id}"`} ${it.checked&&!ro?'checked':''}>
       <span class="what"><span class="nm">${esc(it.row_name)}</span>
         <span class="sub">${esc(it.item_name||"")}${it.amount?' · '+esc(it.amount):''} · ${CZK(price)} each${notes.length?' · '+esc(notes.join(' · ')):''} ${drift}</span>
       </span></label>
-    <span class="qty"><button class="q noprint" data-dec="${it.id}" aria-label="one less">−</button><b>${it.qty}×</b><button class="q noprint" data-inc="${it.id}" aria-label="one more">+</button></span>
+    <span class="qty">${ro?'':`<button class="q noprint" data-dec="${it.id}" aria-label="one less">−</button>`}<b>${it.qty}×</b>${ro?'':`<button class="q noprint" data-inc="${it.id}" aria-label="one more">+</button>`}</span>
     <span class="sum">${CZK(price * it.qty)}</span>
-    <button class="x noprint" data-del="${it.id}" aria-label="remove" title="remove">×</button>
+    ${ro?'':`<button class="x noprint" data-del="${it.id}" aria-label="remove" title="remove">×</button>`}
   </li>`;
 }
 
 function render(){
+  const ro = !!VIEW, items = ro ? VIEW.items : ITEMS;
+  $("viewbar").hidden = !ro;
+  $("saved").hidden = ro || !$("savedList").children.length;
+  if(ro) $("viewing").innerHTML = `<b>${esc(VIEW.name)}</b> · saved ${esc(VIEW.created.replace("T"," "))}`;
   const byStore = {};
-  ITEMS.forEach(it => (byStore[it.store_name || it.store_id] ??= []).push(it));
+  items.forEach(it => (byStore[it.store_name || it.store_id] ??= []).push(it));
   const groups = Object.entries(byStore).sort((a,b)=>b[1].length-a[1].length || a[0].localeCompare(b[0]));
-  const total = ITEMS.reduce((s,it)=>s + (it.price_incl||0)*it.qty, 0);
-  const left = ITEMS.filter(it=>!it.checked).length;
-  $("toolbar").hidden = !ITEMS.length;
-  $("meta").textContent = ITEMS.length
-    ? `${ITEMS.length} items · ${groups.length} stores · ${left} still to get · total ${CZK(total)}`
+  const total = items.reduce((s,it)=>s + (it.price_incl||0)*it.qty, 0);
+  const left = items.filter(it=>!it.checked).length;
+  $("toolbar").hidden = ro || !items.length;
+  $("meta").textContent = items.length
+    ? `${items.length} items · ${groups.length} stores${ro?'':` · ${left} still to get`} · total ${CZK(total)}${ro?' (prices when saved)':''}`
     : "";
-  $("printhead").textContent = `Nákupní seznam · ${new Date().toLocaleDateString("cs-CZ")} · ${CZK(total)}`;
-  if(!ITEMS.length){
+  $("printhead").textContent = ro ? `${VIEW.name} · ${CZK(total)}`
+    : `Nákupní seznam · ${new Date().toLocaleDateString("cs-CZ")} · ${CZK(total)}`;
+  if(!items.length){
     $("stores").innerHTML = `<div class="loader">Your list is empty. Tap prices on the <a href="./">Matrix</a> to add items at a store.</div>`;
     return;
   }
   $("stores").innerHTML = groups.map(([store, items])=>{
     const sub = items.reduce((s,it)=>s + (it.price_incl||0)*it.qty, 0);
     const done = items.filter(it=>it.checked).length;
-    const ordered = [...items].sort((a,b)=>a.checked-b.checked);  // ticked sink to the bottom
+    const ordered = ro ? items : [...items].sort((a,b)=>a.checked-b.checked);  // ticked sink to the bottom
     return `<section class="storegroup">
       <h2>${esc(store)}<small>${items.length} item${items.length>1?'s':''}${done?` · ${done} done`:''} · ${CZK(sub)}</small></h2>
-      <ul class="todo">${ordered.map(line).join("")}</ul></section>`;
+      <ul class="todo">${ordered.map(it=>line(it, ro)).join("")}</ul></section>`;
   }).join("") + `<p class="grand">Total <b>${CZK(total)}</b></p>`;
   document.querySelectorAll("[data-check]").forEach(x=>x.onchange=()=>update(+x.dataset.check, {checked:x.checked}));
   document.querySelectorAll("[data-inc]").forEach(b=>b.onclick=()=>bump(+b.dataset.inc, 1));
@@ -112,6 +128,42 @@ async function remove(body){
   catch(e){ $("status").textContent = e.message; }
 }
 $("print").onclick = () => window.print();
+
+// ---- saved lists
+async function loadSaved(){
+  const d = await api("lists").catch(()=>({lists:[]}));
+  $("savedList").innerHTML = d.lists.map(l=>`<li>
+    <span class="nm">${esc(l.name)}</span>
+    <span class="sub">${esc(l.created.slice(0,10))} · ${l.count} items · ${CZK(l.total||0)}</span>
+    <span class="acts"><button class="btn ghost" data-open="${l.id}">Open</button>
+      <button class="btn ghost" data-reuse="${l.id}">Use again</button>
+      <button class="x" data-deletelist="${l.id}" title="delete">×</button></span></li>`).join("");
+  $("saved").hidden = !!VIEW || !d.lists.length;
+  $("savedList").querySelectorAll("[data-open]").forEach(b=>b.onclick=async()=>{
+    VIEW = await api("list?id="+b.dataset.open); render(); scrollTo(0,0);
+  });
+  $("savedList").querySelectorAll("[data-reuse]").forEach(b=>b.onclick=()=>reuse(+b.dataset.reuse));
+  $("savedList").querySelectorAll("[data-deletelist]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Delete this saved list?")) return;
+    await api("lists/delete", {id:+b.dataset.deletelist}); loadSaved();
+  });
+}
+async function reuse(id){
+  try{
+    const d = await api("lists/reuse", {id});
+    $("status").textContent = d.added ? `Added ${d.added} items at today's prices.` : "Everything was already on the list.";
+    await load();
+  }catch(e){ $("status").textContent = e.message; }
+}
+$("save").onclick = async ()=>{
+  const name = prompt("Name this list:", `Nákup ${new Date().toLocaleDateString("cs-CZ")}`);
+  if(name === null) return;
+  try{ await api("cart/save", {name}); $("status").textContent = "Saved. The list is empty again."; await load(); }
+  catch(e){ $("status").textContent = e.message; }
+};
+$("back").onclick = () => { VIEW = null; render(); loadSaved(); };
+$("printSaved").onclick = () => window.print();
+$("reuseSaved").onclick = () => reuse(VIEW.id);
 $("clearChecked").onclick = () => remove({checked_only:true});
 $("clearAll").onclick = () => { if(confirm("Clear the whole list?")) remove({all:true}); };
 load();

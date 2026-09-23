@@ -1282,6 +1282,7 @@ def find_eans(redo=False):
         c.execute("INSERT OR REPLACE INTO ean_lookup(product_id,ts,found,dismissed) VALUES (?,?,?,0)",
                   (p["id"], today(), len(cands)))
         found += bool(cands)
+        c.commit()
         print(f"  {i}/{len(todo)}  {p['name'][:40]:40} {len(cands)} candidate(s)")
     c.close()
     print(f"barcodes done: candidates for {found} of {len(todo)} items")
@@ -1290,7 +1291,7 @@ def ean_dismiss(product_id):
     c = conn()
     c.execute("DELETE FROM ean_candidate WHERE product_id=?", (product_id,))
     c.execute("UPDATE ean_lookup SET dismissed=1 WHERE product_id=?", (product_id,))
-    c.close()
+    c.commit(); c.close()
 
 # ---------------------------------------------------------------- products (add / edit / delete)
 PRODUCT_FIELDS = ("ean", "name", "category", "vat_pct", "unit", "unit_qty", "pack_note")
@@ -1527,6 +1528,60 @@ def cart_remove(item_id=None, checked_only=False, everything=False):
     elif everything: c.execute("DELETE FROM cart_item")
     c.commit(); c.close()
 
+def cart_save(name=None):
+    """Save the current list (as it is, prices included) and start a fresh one."""
+    c = conn()
+    items = [dict(r) for r in c.execute("SELECT * FROM cart_item ORDER BY store_name, row_name")]
+    if not items: c.close(); raise ValueError("the list is empty")
+    total = round(sum((i["price_incl"] or 0) * i["qty"] for i in items), 2)
+    name = (name or "").strip() or f"Nákup {dt.date.today():%-d. %-m. %Y}"
+    cur = c.execute("INSERT INTO saved_list(name,created,total,items) VALUES (?,?,?,?)",
+                    (name, dt.datetime.now().isoformat(timespec="minutes"), total,
+                     json.dumps(items, ensure_ascii=False)))
+    c.execute("DELETE FROM cart_item")
+    c.commit(); c.close()
+    return cur.lastrowid
+
+def saved_lists():
+    c = conn()
+    out = [dict(id=r["id"], name=r["name"], created=r["created"], total=r["total"],
+                count=len(json.loads(r["items"])))
+           for r in c.execute("SELECT * FROM saved_list ORDER BY created DESC")]
+    c.close()
+    return out
+
+def saved_list(list_id):
+    c = conn()
+    r = c.execute("SELECT * FROM saved_list WHERE id=?", (list_id,)).fetchone()
+    c.close()
+    if not r: raise ValueError("no such list")
+    return dict(id=r["id"], name=r["name"], created=r["created"], total=r["total"], items=json.loads(r["items"]))
+
+def saved_list_reuse(list_id):
+    """Put a saved list back on the current list: same items at the same stores, today's
+    prices where the store still has one (else the saved snapshot). Existing lines win."""
+    stores, rows = matrix_rows()
+    lst = saved_list(list_id)
+    c = conn()
+    have = {r["row_key"] for r in c.execute("SELECT row_key FROM cart_item")}
+    added = 0
+    for it in lst["items"]:
+        if it["row_key"] in have: continue
+        _, snap = matrix_cell(rows, stores, it["row_key"], it["store_id"], it["kind"])
+        it = dict(it, **snap) if snap else it
+        c.execute("""INSERT INTO cart_item(row_key,row_name,unit,store_id,store_name,kind,item_name,amount,
+                                           price_incl,unit_price,promo_until,club,note,url,qty,checked,added)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
+                  (it["row_key"], it["row_name"], it["unit"], it["store_id"], it["store_name"], it["kind"],
+                   it["item_name"], it["amount"], it["price_incl"], it["unit_price"], it["promo_until"],
+                   it["club"], it["note"], it["url"], it["qty"], today()))
+        added += 1
+    c.commit(); c.close()
+    return added
+
+def saved_list_delete(list_id):
+    c = conn(); c.execute("DELETE FROM saved_list WHERE id=?", (list_id,)); c.commit(); c.close()
+
 # ---------------------------------------------------------------- local server
 def products_status():
     """Every product with what it's matched to, per source, and today's offers."""
@@ -1635,6 +1690,10 @@ def serve(port):
                                            stores=stores, rows=rows, cart=cart))
                 if u.path == "/api/cart":
                     return self._json(dict(items=cart_items()))
+                if u.path == "/api/lists":
+                    return self._json(dict(lists=saved_lists()))
+                if u.path == "/api/list":
+                    return self._json(saved_list(int(q["id"])))
                 if u.path == "/api/products":
                     return self._json(dict(products=products_status(), sources=list(SOURCES)))
                 if u.path in ("/api/crawl", "/api/eans"):
@@ -1675,6 +1734,13 @@ def serve(port):
                 if u == "/api/cart/toggle":
                     return self._json(dict(ok=True, in_cart=cart_toggle(a["row_key"], a["store_id"],
                                                                          a.get("kind", "store"))))
+                if u == "/api/cart/save":
+                    return self._json(dict(ok=True, id=cart_save(a.get("name"))))
+                if u == "/api/lists/reuse":
+                    return self._json(dict(ok=True, added=saved_list_reuse(a["id"])))
+                if u == "/api/lists/delete":
+                    saved_list_delete(a["id"])
+                    return self._json(dict(ok=True))
                 if u == "/api/cart/update":
                     cart_update(a["id"], a.get("qty"), a.get("checked"))
                     return self._json(dict(ok=True))

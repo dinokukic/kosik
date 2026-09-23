@@ -148,6 +148,15 @@ CREATE TABLE IF NOT EXISTS ean_lookup (     -- which items were searched, and ou
   dismissed  INTEGER NOT NULL DEFAULT 0     -- user said: none of these
 );
 
+-- Shopping lists saved for later ("Save list & start new"): a snapshot of cart_item rows.
+CREATE TABLE IF NOT EXISTS saved_list (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT NOT NULL,
+  created TEXT NOT NULL,
+  total   REAL,
+  items   TEXT NOT NULL                     -- JSON array of cart_item rows as they were
+);
+
 CREATE INDEX IF NOT EXISTS idx_offering_product ON offering(product_id);
 CREATE INDEX IF NOT EXISTS idx_offering_need ON offering(need_id);
 CREATE INDEX IF NOT EXISTS idx_price_ts ON price(ts);

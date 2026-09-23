@@ -107,6 +107,10 @@ Implemented as: tap a price cell in the matrix (store cell or the flyer cell) to
 row on the list at that store (`cart_item`, one store per row; tapping another store moves
 it; details snapshotted, current price shown next to it). `list.html` = to-do list grouped
 by store with ticks, qty, subtotals, total; Print gives a black-and-white checklist.
+Saved lists: "Save list & start new" snapshots `cart_item` into `saved_list` (JSON) and
+empties the list; saved lists can be opened (read-only, printable), reused (back onto the list
+at today's prices) or deleted. Matrix cells show the SHELF price big with pack size and
+per-unit price small; "cheapest" is still decided per unit.
 Original brief:
 - User picks which stores they'll actually visit this week.
 - For each need, show the cheapest offering **at each store being visited**.

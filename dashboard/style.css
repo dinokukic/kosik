@@ -167,3 +167,13 @@
   .score{font-size:.66rem;padding:.08rem .4rem;border-radius:1rem;border:1px solid var(--line);color:var(--muted)}
   .score.strong{border-color:var(--win);color:var(--win);background:var(--winbg)}
   .score.good{border-color:var(--ink);color:var(--ink)}
+  /* saved lists */
+  .saved{margin-top:2.2rem}
+  .saved h2{font-size:1.05rem;border-bottom:1px solid var(--line);padding-bottom:.3rem;margin-bottom:.3rem}
+  .saved ul{list-style:none;margin:0;padding:0}
+  .saved li{display:flex;flex-wrap:wrap;align-items:baseline;gap:.2rem 1rem;padding:.5rem 0;border-bottom:1px solid var(--line)}
+  .saved li .sub{font-size:.75rem;color:var(--muted);font-style:italic}
+  .saved li .acts{margin-left:auto;display:flex;gap:.4rem;align-items:center}
+  .saved li .x{all:unset;cursor:pointer;color:var(--muted);font-size:1.1rem;padding:0 .3rem}
+  .viewbar{align-items:center}
+  .viewbar #viewing{margin-right:auto}

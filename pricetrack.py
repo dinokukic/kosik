@@ -23,6 +23,7 @@ Usage:
     python pricetrack.py store member kaufland off     ignore Kaufland Card prices
     python pricetrack.py matrix                        rows x stores, cheapest marked
     python pricetrack.py export                        writes dashboard/prices.json
+    python pricetrack.py serve                         local dashboard + match screen :8765
 """
 import argparse, csv, json, os, re, sqlite3, time, datetime as dt
 from pathlib import Path
@@ -85,7 +86,7 @@ def upsert_offering(c, store_id, store_ref, name, product_id=None, url="", unit_
     c.execute("""INSERT INTO offering(store_id,store_ref,source,name,product_id,need_id,url,unit_qty)
                  VALUES (?,?,?,?,?,?,?,?)
                  ON CONFLICT(store_id,store_ref) DO UPDATE SET name=excluded.name,
-                   url=excluded.url, source=excluded.source,
+                   url=excluded.url, source=excluded.source, active=1,
                    product_id=COALESCE(excluded.product_id, offering.product_id),
                    need_id=COALESCE(excluded.need_id, offering.need_id),
                    unit_qty=COALESCE(excluded.unit_qty, offering.unit_qty)""",
@@ -105,6 +106,8 @@ def record(c, offering_id, price_incl, is_promo=False, promo_until=None, ts=None
 # ---------------------------------------------------------------- init / seed
 def init():
     c = conn(); c.executescript(SCHEMA.read_text(encoding="utf-8"))
+    if "packs" not in [r["name"] for r in c.execute("PRAGMA table_info(watch)")]:
+        c.execute("ALTER TABLE watch ADD COLUMN packs TEXT")
     c.executemany("""INSERT INTO store(id,name,url,prices_ex_vat) VALUES (?,?,?,?)
                      ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url,
                        prices_ex_vat=excluded.prices_ex_vat""", STORES)
@@ -121,6 +124,11 @@ def init():
                            pack_note=excluded.pack_note""",
                       (r["ean"], r["name"], r["category"], int(r["vat_pct"]), unit, qty,
                        r["pack_note"]))
+    for o in c.execute("SELECT * FROM offering WHERE source IN (%s)" % ",".join("?" * len(SOURCES)),
+                       list(SOURCES)).fetchall():
+        c.execute("INSERT OR IGNORE INTO watch(source,ref,product_id,need_id) VALUES (?,?,?,?)",
+                  (o["source"], SOURCES[o["source"]]().ref_of(o["store_ref"]),
+                   o["product_id"], o["need_id"]))
     c.commit()
     n = c.execute("SELECT COUNT(*) FROM product").fetchone()[0]; c.close()
     print(f"init ok -> {DB} ({n} products)")
@@ -233,7 +241,9 @@ class Kupi:
     page sections -> dedupe by offer id. One chain can have several offers for one product
     (card price vs regular, different flyers); all are stored, the view picks per today."""
     BASE = "https://www.kupi.cz"
-    CHAINS = {"penny-market": "penny", "teta-drogerie": "teta"}  # kupi slug -> store id
+    # kupi chain slug -> our store id (unknown slugs become stores under Kupi's name).
+    # NOTE: Kupi also carries Makro flyers; unverified whether those are bez DPH.
+    CHAINS = {"penny-market": "penny", "teta-drogerie": "teta", "dm-drogerie": "dm"}
 
     @staticmethod
     def _text(fragment):
@@ -369,55 +379,120 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
         record(c, oid, o["price_incl"], o["is_promo"], o["promo_until"],
                valid_from=o["valid_from"], club=o["club"], note=o["note"], ref=o["ref"])
 
+def resolve_target(c, ean=None, need=None):
+    """-> (product_row | None, need_row | None). Exactly one of ean / need."""
+    if ean:
+        product = c.execute("SELECT * FROM product WHERE ean=?", (ean,)).fetchone()
+        if not product: raise ValueError(f"no product with EAN {ean}")
+        return product, None
+    need_row = c.execute("SELECT * FROM need WHERE name=?", (need,)).fetchone()
+    if not need_row: raise ValueError(f"no need named {need!r} (run: need add)")
+    return None, need_row
+
+def retire_missing(c, src, ref, product=None, need=None, returned=()):
+    """Offerings of this watch that the source no longer returns (flyer ended, product
+    delisted) go inactive so their last price stops counting; a later fetch revives them."""
+    col, val = ("product_id", product["id"]) if product else ("need_id", need["id"])
+    s, keep = source(src), set(returned)
+    for r in c.execute(f"SELECT id, store_ref FROM offering WHERE source=? AND {col}=? AND active=1",
+                       (src, val)).fetchall():
+        if s.ref_of(r["store_ref"]) == ref and r["store_ref"] not in keep:
+            c.execute("UPDATE offering SET active=0 WHERE id=?", (r["id"],))
+
+def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None):
+    """Cache a picked candidate as a watch, then pull its current offers into offerings
+    linked to the product (`ean`) or need. Returns the offers saved (may be none: a Kupi
+    product with no flyer this week is still watched and picked up by later fetches)."""
+    c = conn()
+    try:
+        product, need_row = resolve_target(c, ean, need)
+        packs = ",".join(packs) if isinstance(packs, (list, tuple)) else packs or None
+        c.execute("""INSERT INTO watch(source,ref,name,product_id,need_id,qty,packs)
+                     VALUES (?,?,?,?,?,?,?)
+                     ON CONFLICT DO UPDATE SET name=excluded.name, qty=excluded.qty,
+                       packs=excluded.packs""",
+                  (src, ref, name, product["id"] if product else None,
+                   need_row["id"] if need_row else None, qty, packs))
+        offers = source(src).fetch([ref]).get(ref, [])
+        keep = set(packs.split(",")) if packs else None
+        offers = [o for o in offers if not keep or not o.get("key") or o["key"] in keep]
+        save_offers(c, src, offers, product, need_row, qty)
+        retire_missing(c, src, ref, product, need_row, [o["store_ref"] for o in offers])
+        c.commit()
+        return offers
+    finally:
+        c.close()
+
+def unlink(src, ref, ean=None, need=None):
+    """Undo a match: drop the watch and this ref's offerings (with prices) from the target."""
+    c = conn()
+    try:
+        product, need_row = resolve_target(c, ean, need)
+        col, val = ("product_id", product["id"]) if product else ("need_id", need_row["id"])
+        c.execute(f"DELETE FROM watch WHERE source=? AND ref=? AND {col}=?", (src, ref, val))
+        s = source(src)
+        ids = [r["id"] for r in c.execute(f"SELECT id, store_ref FROM offering WHERE source=? AND {col}=?",
+                                          (src, val)) if s.ref_of(r["store_ref"]) == ref]
+        c.executemany("DELETE FROM offering WHERE id=?", [(i,) for i in ids])
+        c.commit()
+        return len(ids)
+    finally:
+        c.close()
+
 def match(src, ean=None, need=None, query=None, pick=None, qty=None):
     """Add-a-product == match: search the source, you pick the right item, we cache its id.
     Link to a product (same EAN, `ean`) or, for a different brand/pack that satisfies the
     same need, only to the need (`need`). A Kupi pick brings every chain's flyer offer."""
     c = conn()
-    if ean:
-        product = c.execute("SELECT * FROM product WHERE ean=?", (ean,)).fetchone()
-        if not product: raise SystemExit(f"no product with EAN {ean}")
-        target, need_row = product, None
-    else:
-        need_row = c.execute("SELECT * FROM need WHERE name=?", (need,)).fetchone()
-        if not need_row: raise SystemExit(f"no need named {need!r} (run: need add)")
-        target, product = need_row, None
-    cands = search(src, query or target["name"])
+    try:
+        product, need_row = resolve_target(c, ean, need)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    finally:
+        c.close()
+    target = product or need_row
+    cands = search(src, query or default_query(target["name"]))
     if not cands: return
     if pick is None:
         raw = input(f"\nWhich is '{target['name']}'?  number, or blank to skip: ").strip()
         if not raw: return
         pick = int(raw)
     cd = cands[pick - 1]
-    offers = source(src).fetch([cd["ref"]]).get(cd["ref"], cd["offers"])
-    save_offers(c, src, offers, product, need_row, qty)
-    c.commit(); c.close()
+    offers = link(src, cd["ref"], ean, need, qty, cd["name"])
     print(f"matched {target['name']} -> {src}:{cd['ref']} ({cd['name']}), "
           f"{len(offers)} offer(s): " + "; ".join(fmt_offer(o) for o in offers[:4]))
+
+def default_query(name):
+    """Receipt name -> search text the stores understand: drop Makro house-brand codes,
+    sizes and counts; expand receipt abbreviations. Always editable in the UI."""
+    q = re.sub(r"\b(MC|FL|ASC|NN|PAC)\b", " ", name)
+    q = re.sub(r"\bTP\b", "toaletní papír", q)
+    q = re.sub(r"\d+([.,]\d+)?\s*x\s*\d+\s*g\b|\d+([.,]\d+)?\s*(kg|g|ml|l|L|ks)\b|\d+-vrstv\w*"
+               r"|\d+/\d+|\d+\s*%|\bvel\.\s*\d+|\bvaničk\w*", " ", q)
+    return re.sub(r"\s+", " ", q).strip(" .,").lower()
 
 def fetch(which):
     c = conn()
     for src in which or list(SOURCES):
-        s = source(src)
-        rows = c.execute("SELECT * FROM offering WHERE source=? AND active=1", (src,)).fetchall()
-        if not rows:
+        watches = c.execute("SELECT * FROM watch WHERE source=?", (src,)).fetchall()
+        if not watches:
             print(f"  {src}: nothing matched yet (run: match {src} <ean>)"); continue
-        groups = {}
-        for r in rows: groups.setdefault(s.ref_of(r["store_ref"]), []).append(r)
         try:
-            got = s.fetch(list(groups))
+            got = source(src).fetch(sorted({w["ref"] for w in watches}))
         except Exception as e:  # fail soft per source
             print(f"  [{src}] {e}"); continue
-        for ref, members in groups.items():
-            offers = got.get(ref) or []
+        for w in watches:
+            product = c.execute("SELECT * FROM product WHERE id=?", (w["product_id"],)).fetchone() \
+                if w["product_id"] else None
+            need = c.execute("SELECT * FROM need WHERE id=?", (w["need_id"],)).fetchone() \
+                if w["need_id"] else None
+            keep = set(w["packs"].split(",")) if w["packs"] else None
+            offers = [o for o in got.get(w["ref"]) or []
+                      if not keep or not o.get("key") or o["key"] in keep]
+            save_offers(c, src, offers, product, need, w["qty"])
+            retire_missing(c, src, w["ref"], product, need, [o["store_ref"] for o in offers])
             if not offers:
-                print(f"  {src:6} {members[0]['name'][:44]:44} (no current offers)"); continue
-            m = members[0]  # new chains/packs inherit what this ref was matched to
-            product = c.execute("SELECT * FROM product WHERE id=?", (m["product_id"],)).fetchone() \
-                if m["product_id"] else None
-            need = c.execute("SELECT * FROM need WHERE id=?", (m["need_id"],)).fetchone() \
-                if m["need_id"] else None
-            save_offers(c, src, offers, product, need)
+                print(f"  {src:6} {(w['name'] or w['ref'])[:44]:44} (no current offers)")
             for o in offers:
                 print(f"  {src:6} {o['name'][:44]:44} {fmt_offer(o)}")
         c.commit()
@@ -489,11 +564,111 @@ def export():
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"export ok -> {EXPORT} ({len(rows)} rows x {len(stores)} stores)")
 
+# ---------------------------------------------------------------- local server
+def products_status():
+    """Every product with what it's matched to, per source, and today's offers."""
+    c = conn()
+    prods = [dict(r) for r in c.execute("""SELECT p.*, n.name AS need_name FROM product p
+                                           LEFT JOIN need n ON n.id = p.need_id
+                                           ORDER BY p.category, p.name""")]
+    watches = [dict(r) for r in c.execute("SELECT * FROM watch WHERE product_id IS NOT NULL")]
+    offers = [dict(r) for r in c.execute("""SELECT product_id, source, store_ref, store_id,
+                                                   offering_name, price_incl, unit_price, unit,
+                                                   promo_until, club
+                                            FROM v_offer WHERE product_id IS NOT NULL""")]
+    stores = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM store")}
+    c.close()
+    for p in prods:
+        p["query"] = default_query(p["name"])
+        p["matches"] = []
+        for w in (w for w in watches if w["product_id"] == p["id"]):
+            s = source(w["source"])
+            p["matches"].append(dict(source=w["source"], ref=w["ref"], name=w["name"] or w["ref"],
+                offers=[dict(o, store_name=stores.get(o["store_id"], o["store_id"]))
+                        for o in offers if o["product_id"] == p["id"] and o["source"] == w["source"]
+                        and s.ref_of(o["store_ref"]) == w["ref"] and o["price_incl"] is not None]))
+        p["manual"] = [dict(o, store_name=stores.get(o["store_id"], o["store_id"]))
+                       for o in offers if o["product_id"] == p["id"] and o["source"] == "manual"
+                       and o["price_incl"] is not None]
+    return prods
+
+def serve(port):
+    from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+    from urllib.parse import urlparse, parse_qs
+    import functools, traceback
+    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    class Handler(SimpleHTTPRequestHandler):
+        def _json(self, obj, code=200):
+            body = json.dumps(obj, ensure_ascii=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+
+        def _guard(self):
+            # local only: refuse other Host headers (DNS rebinding) and non-JSON writes
+            # (a cross-site form can't send application/json without a CORS preflight)
+            if self.headers.get("Host") not in allowed_hosts:
+                self._json({"error": "bad host"}, 403); return False
+            return True
+
+        def log_message(self, fmt, *args):
+            if self.path.startswith("/api/"): super().log_message(fmt, *args)
+
+        def do_GET(self):
+            if not self._guard(): return
+            u = urlparse(self.path)
+            if not u.path.startswith("/api/"): return super().do_GET()
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            try:
+                if u.path == "/api/matrix":
+                    stores, rows = matrix_rows()
+                    return self._json(dict(generated=dt.datetime.now().isoformat(timespec="minutes"),
+                                           stores=stores, rows=rows))
+                if u.path == "/api/products":
+                    return self._json(dict(products=products_status(), sources=list(SOURCES)))
+                if u.path == "/api/search":
+                    return self._json(dict(candidates=source(q["source"]).search(q["q"])))
+                self._json({"error": "not found"}, 404)
+            except Exception as e:
+                traceback.print_exc(); self._json({"error": str(e)}, 500)
+
+        def do_POST(self):
+            if not self._guard(): return
+            if not self.headers.get("Content-Type", "").startswith("application/json"):
+                return self._json({"error": "json only"}, 415)
+            try:
+                a = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                u = urlparse(self.path).path
+                if u == "/api/link":
+                    offers = link(a["source"], a["ref"], a.get("ean"), a.get("need"),
+                                  a.get("qty"), a.get("name"), a.get("packs"))
+                    return self._json(dict(ok=True, offers=len(offers)))
+                if u == "/api/unlink":
+                    return self._json(dict(ok=True, removed=unlink(a["source"], a["ref"],
+                                                                    a.get("ean"), a.get("need"))))
+                if u == "/api/fetch":
+                    fetch(a.get("sources")); export()
+                    return self._json(dict(ok=True))
+                self._json({"error": "not found"}, 404)
+            except Exception as e:
+                traceback.print_exc(); self._json({"error": str(e)}, 500)
+
+    handler = functools.partial(Handler, directory=str(EXPORT.parent))
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    print(f"Košík on http://localhost:{port}  (matrix)  ·  http://localhost:{port}/match.html  (match)")
+    try: httpd.serve_forever()
+    except KeyboardInterrupt: pass
+
 # ---------------------------------------------------------------- cli
 def main():
     ap = argparse.ArgumentParser(description="Košík price tracker")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("init", "seed", "matrix", "export"): sub.add_parser(name)
+    sv = sub.add_parser("serve", help="local dashboard + match screen")
+    sv.add_argument("--port", type=int, default=8765)
     s = sub.add_parser("search"); s.add_argument("source", choices=list(SOURCES))
     s.add_argument("query")
     m = sub.add_parser("match"); m.add_argument("source", choices=list(SOURCES))
@@ -523,6 +698,7 @@ def main():
     elif a.cmd == "fetch": fetch(a.source.split(",") if a.source else None)
     elif a.cmd == "matrix": matrix()
     elif a.cmd == "export": export()
+    elif a.cmd == "serve": serve(a.port)
     elif a.cmd == "need" and a.ncmd == "add": need_add(a.name, a.unit, a.category)
     elif a.cmd == "need" and a.ncmd == "link": need_link(a.name, a.eans, a.offering)
     elif a.cmd == "store" and a.scmd == "member": store_member(a.store, a.state == "on")

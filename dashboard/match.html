@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Košík match</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Košík<small>match each item once — prices are fetched by id from then on</small></h1>
+    <nav><a href="./">Matrix</a><a href="match.html" aria-current="page">Match</a></nav>
+  </header>
+  <div class="meta" id="meta"></div>
+  <div class="toolbar">
+    <label><input type="checkbox" id="onlyOpen" checked> unmatched first</label>
+    <button class="btn ghost" id="refresh">Refresh all prices</button>
+    <span class="status" id="gstatus"></span>
+  </div>
+  <div id="list"></div>
+  <p class="note">Kupi collects chain flyers, so picking a Kupi product brings in every chain's current
+    offer for it and keeps checking weekly, even when nobody has it on offer. Rohlík is one store,
+    one product id. Pick the same item (brand + pack); a different pack size is fine, since prices
+    are compared per unit.</p>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
+const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
+const SRC = {kupi:"Kupi", rohlik:"Rohlík"};
+let PRODUCTS = [], SOURCES = [];
+const ui = {};   // per ean: {source, query, results, busy, msg}
+
+async function api(path, body){
+  const r = await fetch("api/"+path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
+                                               body:JSON.stringify(body)} : {});
+  const d = await r.json().catch(()=>({error:"server not running? start: python3 pricetrack.py serve"}));
+  if(!r.ok || d.error) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+async function load(){
+  try{
+    const d = await api("products");
+    PRODUCTS = d.products;
+    SOURCES = [...d.sources].sort((a,b)=>(b==="kupi")-(a==="kupi"));  // Kupi first: most chains
+    render();
+  }catch(e){
+    $("list").innerHTML = `<div class="loader">Couldn't reach the local server (${esc(e.message)}).<br>
+      Start it with <code>python3 pricetrack.py serve</code> and open <code>localhost:8765/match.html</code>.</div>`;
+  }
+}
+
+function offerChip(o){
+  const size = o.amount ? `/${esc(o.amount)}` : "";
+  const when = o.promo_until ? ` do ${dm(o.promo_until)}` : "";
+  const from = o.valid_from && o.valid_from > new Date().toISOString().slice(0,10) ? ` od ${dm(o.valid_from)}` : "";
+  return `<span class="off" title="${esc([o.club,o.note].filter(Boolean).join(" · "))}">${esc(o.store_name||o.store_id)} `
+    + `${CZK(o.price_incl)}${size}${from}${when}${o.club?' · requires card':''}</span>`;
+}
+
+function render(){
+  const open = [...document.querySelectorAll("details.prod[open]")].map(d=>d.dataset.ean);
+  const isMatched = p => p.matches.length>0;
+  let list = [...PRODUCTS];
+  if($("onlyOpen").checked) list.sort((a,b)=>isMatched(a)-isMatched(b));
+  const n = PRODUCTS.filter(isMatched).length;
+  $("meta").textContent = `${n} of ${PRODUCTS.length} items matched to at least one source`;
+  $("list").innerHTML = list.map(p=>{
+    const badges = SOURCES.map(s=>{
+      const m = p.matches.filter(x=>x.source===s);
+      return `<span class="badge ${m.length?'on':''}">${SRC[s]||s}${m.length?' ✓':''}</span>`;
+    }).join("");
+    return `<details class="prod" data-ean="${esc(p.ean)}" ${open.includes(p.ean)?'open':''}>
+      <summary><span class="nm">${esc(p.name)}</span>
+        <span class="badges">${badges}</span>
+        <span class="sub">${esc(p.category)} · per ${esc(p.unit)} (${+p.unit_qty} in the receipt pack)${p.need_name?' · need: '+esc(p.need_name):''}</span>
+      </summary>
+      <div class="panel" id="panel-${esc(p.ean)}"></div>
+    </details>`;
+  }).join("");
+  document.querySelectorAll("details.prod").forEach(d=>{
+    d.addEventListener("toggle", ()=>{ if(d.open) openPanel(d.dataset.ean); });
+    if(d.open) renderPanel(d.dataset.ean);
+  });
+}
+
+function state(ean){
+  const p = PRODUCTS.find(x=>x.ean===ean);
+  return ui[ean] ??= {source: SOURCES[0], query: p.query, results: null, busy: false, msg: ""};
+}
+
+function openPanel(ean){
+  const st = state(ean);
+  renderPanel(ean);
+  if(!st.results && !st.busy) search(ean);
+}
+
+// A Kupi product can lump pack sizes (diapers 68/52/44 ks). Offer a choice when it does.
+function packsOf(c){
+  const m = new Map();
+  c.offers.forEach(o=>{ if(o.key && o.key!=="vse") m.set(o.key, o.amount || o.key); });
+  return [...m];
+}
+function packChooser(c, i){
+  const packs = packsOf(c);
+  if(packs.length < 2) return "";
+  return `<span class="packs">sizes to track: ${packs.map(([k,label])=>
+    `<label><input type="checkbox" data-pack="${i}" value="${esc(k)}" checked> ${esc(label)}</label>`).join("")}</span>`;
+}
+
+function renderPanel(ean){
+  const p = PRODUCTS.find(x=>x.ean===ean), st = state(ean), el = $("panel-"+ean);
+  if(!el) return;
+  const matched = p.matches.map(m=>`<li><span class="src">${esc(SRC[m.source]||m.source)}</span>
+      <span>${esc(m.name)}</span>
+      <span>${m.offers.length ? m.offers.map(o=>offerChip({...o, amount:""})).join(" ")
+                               : '<span class="off none">no current offer</span>'}</span>
+      <button class="btn ghost" data-unlink="${esc(m.source)}|${esc(m.ref)}">Remove</button></li>`).join("");
+  const manual = p.manual.length ? `<li><span class="src">hand-entered</span>
+      <span>${p.manual.map(o=>offerChip({...o, amount:""})).join(" ")}</span></li>` : "";
+  const taken = new Set(p.matches.filter(m=>m.source===st.source).map(m=>m.ref));
+  const results = st.results===null ? "" : !st.results.length
+    ? `<p class="status">Nothing found. Try fewer words (brand + product), no sizes.</p>`
+    : `<ul class="cands">${st.results.map((c,i)=>`<li class="cand">
+        <span class="cn">${esc(c.name)}</span>
+        ${packChooser(c, i)}
+        <span class="offers">${c.offers.length ? c.offers.map(offerChip).join("")
+            : '<span class="off none">no flyer offer right now; still trackable</span>'}</span>
+        ${taken.has(c.ref) ? '<button class="btn ghost" disabled>Matched</button>'
+                           : `<button class="btn" data-pick="${i}" ${st.busy?'disabled':''}>This one</button>`}
+      </li>`).join("")}</ul>`;
+  el.innerHTML = `
+    ${matched||manual ? `<ul class="matched">${matched}${manual}</ul>` : ""}
+    <div class="searchrow">
+      <span class="seg">${SOURCES.map(s=>`<button data-src="${s}" aria-pressed="${s===st.source}">${SRC[s]||s}</button>`).join("")}</span>
+      <input type="search" value="${esc(st.query)}" aria-label="search text">
+      <button class="btn ghost" data-go ${st.busy?'disabled':''}>Search</button>
+    </div>
+    <p class="status ${st.err?'err':''}">${esc(st.msg)}</p>
+    ${results}`;
+  const input = el.querySelector("input");
+  input.oninput = () => { st.query = input.value; };
+  input.onkeydown = e => { if(e.key==="Enter") search(ean); };
+  el.querySelector("[data-go]").onclick = () => search(ean);
+  el.querySelectorAll("[data-src]").forEach(b=>b.onclick=()=>{
+    st.source = b.dataset.src; st.results = null; search(ean); });
+  el.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{
+    const i = +b.dataset.pick, boxes = [...el.querySelectorAll(`[data-pack="${i}"]`)];
+    const chosen = boxes.filter(x=>x.checked).map(x=>x.value);
+    if(boxes.length && !chosen.length){ state(ean).msg = "Tick at least one size."; return renderPanel(ean); }
+    pick(ean, st.results[i], boxes.length && chosen.length < boxes.length ? chosen : null);
+  });
+  el.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
+    const [source, ref] = b.dataset.unlink.split("|"); unpick(ean, source, ref); });
+}
+
+async function run(ean, msg, fn){
+  const st = state(ean);
+  st.busy = true; st.err = false; st.msg = msg; renderPanel(ean);
+  try{ await fn(st); }
+  catch(e){ st.err = true; st.msg = e.message; }
+  finally{ st.busy = false; renderPanel(ean); }
+}
+
+function search(ean){
+  return run(ean, "Searching…", async st=>{
+    const d = await api(`search?source=${encodeURIComponent(st.source)}&q=${encodeURIComponent(st.query)}`);
+    st.results = d.candidates; st.msg = "";
+  });
+}
+
+function pick(ean, c, packs){
+  return run(ean, "Saving and fetching current prices…", async st=>{
+    const d = await api("link", {source: st.source, ref: c.ref, ean, name: c.name, packs});
+    st.msg = `Matched ${c.name}: ${d.offers} current offer(s).`;
+    await reloadProducts();
+  });
+}
+
+function unpick(ean, source, ref){
+  return run(ean, "Removing…", async st=>{
+    await api("unlink", {source, ref, ean});
+    st.msg = "Removed.";
+    await reloadProducts();
+  });
+}
+
+async function reloadProducts(){
+  const d = await api("products");
+  PRODUCTS = d.products;
+  const n = PRODUCTS.filter(p=>p.matches.length).length;
+  $("meta").textContent = `${n} of ${PRODUCTS.length} items matched to at least one source`;
+  document.querySelectorAll("details.prod").forEach(el=>{
+    const p = PRODUCTS.find(x=>x.ean===el.dataset.ean);
+    el.querySelector(".badges").innerHTML = SOURCES.map(s=>{
+      const on = p.matches.some(x=>x.source===s);
+      return `<span class="badge ${on?'on':''}">${SRC[s]||s}${on?' ✓':''}</span>`;
+    }).join("");
+  });
+}
+
+$("onlyOpen").onchange = render;
+$("refresh").onclick = async ()=>{
+  const b = $("refresh"); b.disabled = true;
+  $("gstatus").textContent = "Fetching every matched item (Kupi pages are 1.5 s apart)…";
+  try{ await api("fetch", {}); $("gstatus").textContent = "Prices refreshed."; await reloadProducts();
+       document.querySelectorAll("details.prod[open]").forEach(d=>renderPanel(d.dataset.ean)); }
+  catch(e){ $("gstatus").textContent = e.message; }
+  finally{ b.disabled = false; }
+};
+load();
+</script>
+</body>
+</html>

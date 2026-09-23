@@ -12,6 +12,8 @@ verified Rohlík API, Bunny architecture). Start there.
 watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, units)
 pricetrack.py          local SQLite tool: init | seed | search | match | fetch | need | matrix | export
 dashboard/index.html   store matrix: price per unit, cheapest per row marked
+dashboard/match.html   match screen: pick each item's product per source (needs `serve`)
+dashboard/style.css    shared styles
 bunny/
   schema.sql           three-layer schema + views, shared by local SQLite and Bunny
   seed.mjs             load schema + stores + products into Bunny (auto-loads .env)
@@ -26,6 +28,7 @@ package.json           @bunny.net/database-client (for bunny/seed.mjs)
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python pricetrack.py init && python pricetrack.py seed
+python pricetrack.py serve                     # localhost:8765 — matrix + match screen
 python pricetrack.py matrix                    # rows x stores in the terminal
 
 # match once per item (you pick the right pack), then fetch by id forever

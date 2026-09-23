@@ -4,61 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Košík matrix</title>
-<style>
-  :root{
-    --ink:#1b1a17; --paper:#faf7f0; --line:#e4ddce; --muted:#8a8272;
-    --win:#3f7d4e; --winbg:#eaf3ea;
-    box-sizing:border-box;
-    padding-top:env(safe-area-inset-top,0); padding-bottom:env(safe-area-inset-bottom,0);
-  }
-  *{box-sizing:inherit}
-  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
-    --ink:#ece7db; --paper:#16150f; --line:#332f24; --muted:#9a917d; --winbg:#17251a;
-  }}
-  html{-webkit-text-size-adjust:100%}
-  body{margin:0;background:var(--paper);color:var(--ink);
-    font-family:"Iowan Old Style",Palatino,"Palatino Linotype",Georgia,serif;line-height:1.4}
-  .wrap{max-width:940px;margin:0 auto;padding:clamp(1.1rem,4vw,2.4rem)}
-  header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem 2rem;
-    border-bottom:2px solid var(--ink);padding-bottom:1rem;margin-bottom:.4rem}
-  h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0;letter-spacing:-.01em;font-weight:600}
-  h1 small{display:block;font-size:.42em;letter-spacing:.02em;color:var(--muted);
-    font-weight:400;font-style:italic;margin-top:.3em}
-  .meta{color:var(--muted);font-size:.8rem;font-style:italic;margin:.6rem 0 1.6rem}
-  .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.4rem}
-  .filters button{font:inherit;font-size:.82rem;padding:.28rem .8rem;cursor:pointer;
-    background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:2rem}
-  .filters button[aria-pressed=true]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
-  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-top:2px solid var(--ink)}
-  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-  th,td{padding:.5rem .6rem;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
-  thead th{font-size:.74rem;font-weight:600;color:var(--muted);letter-spacing:.02em;
-    position:sticky;top:0;background:var(--paper)}
-  th.row,td.row{text-align:left;white-space:normal;min-width:11rem;position:sticky;left:0;
-    background:var(--paper);z-index:1}
-  td.row .nm{font-size:.95rem}
-  td.row .per{color:var(--muted);font-size:.7rem;font-style:italic}
-  td.cell b{font-weight:500;font-size:.92rem}
-  td.cell .tot{display:block;font-size:.66rem;color:var(--muted)}
-  td.cell a{color:inherit;text-decoration:none}
-  td.empty{color:var(--line)}
-  td.win{background:var(--winbg)} td.win b{color:var(--win);font-weight:700}
-  .pill{display:inline-block;font-size:.58rem;padding:.02rem .35rem;border-radius:1rem;
-    background:var(--winbg);color:var(--win);border:1px solid var(--win);margin-left:.25rem;
-    vertical-align:.15em;font-style:normal}
-  .pill.club{background:transparent;color:var(--muted);border-color:var(--line)}
-  .loader{border:1px dashed var(--line);border-radius:.6rem;padding:1.4rem;text-align:center;
-    color:var(--muted);font-style:italic}
-  .loader label{color:var(--ink);text-decoration:underline;cursor:pointer;font-style:normal}
-  .note{margin-top:2rem;color:var(--muted);font-size:.76rem;font-style:italic;
-    border-top:1px solid var(--line);padding-top:1rem}
-  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>Košík<small>every store's price per unit — cheapest per row marked</small></h1>
+    <nav><a href="./" aria-current="page">Matrix</a><a href="match.html">Match</a></nav>
   </header>
   <div class="meta" id="meta"></div>
   <div class="filters" id="filters"></div>
@@ -82,7 +34,10 @@ function apply(d){
 }
 async function load(){
   try{
-    apply(await (await fetch("prices.json?"+Date.now())).json());
+    // live from `pricetrack.py serve`, else the last export
+    let r = await fetch("api/matrix").catch(()=>null);
+    if(!r || !r.ok) r = await fetch("prices.json?"+Date.now());
+    apply(await r.json());
   }catch(e){
     document.getElementById("list").innerHTML =
       `<div class="loader">Opened as a local file, so the browser won't auto-load the data.<br>

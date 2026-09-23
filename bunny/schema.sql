@@ -64,6 +64,20 @@ CREATE TABLE IF NOT EXISTS price (
   PRIMARY KEY (offering_id, ts, ref)
 );
 
+-- What was matched: "source ref X is product/need Y". Survives weeks with no offers
+-- (flyers rotate); fetch walks this, and offerings are (re)derived from it.
+CREATE TABLE IF NOT EXISTS watch (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  source     TEXT NOT NULL,                 -- rohlik | kupi
+  ref        TEXT NOT NULL,                 -- rohlik product id, kupi slug
+  name       TEXT,                          -- as the source calls it
+  product_id INTEGER REFERENCES product(id) ON DELETE CASCADE,
+  need_id    INTEGER REFERENCES need(id) ON DELETE CASCADE,
+  qty        REAL,                          -- forced units per pack, NULL = from pack amount
+  packs      TEXT                           -- kupi pack keys to keep ('68-ks,52-ks'), NULL = all
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_watch ON watch(source, ref, IFNULL(product_id, 0), IFNULL(need_id, 0));
+
 CREATE INDEX IF NOT EXISTS idx_offering_product ON offering(product_id);
 CREATE INDEX IF NOT EXISTS idx_offering_need ON offering(need_id);
 CREATE INDEX IF NOT EXISTS idx_price_ts ON price(ts);

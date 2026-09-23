@@ -11,6 +11,15 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   `store`, `need`, `product`, `offering`, `price`, plus views `v_offer` (resolved
   need/unit + latest price) and `v_matrix` (one cell per row×store, `is_cheapest`).
   Bunny DB is seeded with it (16 stores, 32 products); old `item`/`quote` tables dropped.
+- **Local server** (`python3 pricetrack.py serve` → localhost:8765, 127.0.0.1 only):
+  matrix at `/`, **match screen at `/match.html`** (search Kupi/Rohlík per item, pick,
+  remove, pack-size picker, refresh all). JSON API under `/api/` (matrix, products,
+  search, link, unlink, fetch); writes need `Content-Type: application/json` + local Host.
+  Stop-gap until the Edge Script read/write API exists.
+- **`watch` table = what was matched** (source + ref → product/need, optional qty and
+  Kupi `packs`). `fetch` walks watches, not offerings, so an item with no flyer this week
+  stays tracked. Offerings a fetch no longer returns go `active=0` (their last price stops
+  counting) and are revived if they come back.
 - **CLI** (`pricetrack.py`): `init`, `seed`, `search <source>`, `match <source>` (to a
   product by EAN or to a need with `--need`), `fetch` (by cached id), `need add|link`,
   `store member <chain> on|off`, `matrix`, `export`.
@@ -102,7 +111,11 @@ per-store product ids == the matching step. Add-item UI and match UI are the sam
 - One Kupi product can span pack sizes (Rama 225 g / 400 g) → offering per
   (chain, slug, pack): `store_ref = kupi:<slug>:<pack>`, unit_qty from the pack amount.
 - Chain slug → store id mapping in `Kupi.CHAINS` (penny-market→penny,
-  teta-drogerie→teta); unknown chains get created as stores with Kupi's name.
+  teta-drogerie→teta, dm-drogerie→dm); unknown chains (kosik-cz, jip, flop…) get created as
+  stores with Kupi's name. Kupi also lists **Makro** flyers — unverified whether bez DPH.
+- **Kupi lumps variants into one product** (Pampers Premium Care = all diaper sizes, as
+  68/52/44 ks packs; "1-ks" = price per pack with no count). The match screen offers a
+  size picker; the choice is stored in `watch.packs`.
 - Match once per product (`match kupi <ean>` / `--need`); `fetch` re-reads each matched
   product page (1.5 s apart) and new chains carrying it are added automatically.
 

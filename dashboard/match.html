@@ -14,9 +14,13 @@
   </header>
   <div class="meta" id="meta"></div>
   <div class="toolbar">
-    <label><input type="checkbox" id="onlyOpen" checked> unmatched first</label>
+    <label>order <select id="order">
+      <option value="unmatched">unmatched first</option>
+      <option value="barcode">barcode candidates first</option>
+      <option value="list">as listed</option></select></label>
     <button class="btn ghost" id="refresh">Refresh store prices</button>
-    <button class="btn ghost" id="crawl" title="every current flyer offer of the tracked chains; 10–20 min">Crawl Kupi flyers</button>
+    <button class="btn ghost" id="crawl" title="every current flyer offer of the tracked chains; ~30 min">Crawl Kupi flyers</button>
+    <button class="btn ghost" id="eans" title="for items without a barcode: search Globus + Tesco by name; ~15 min">Find barcodes</button>
     <span class="status" id="gstatus"></span>
   </div>
   <details class="addbox" id="addbox">
@@ -101,14 +105,16 @@ function render(){
   const open = [...document.querySelectorAll("details.prod[open]")].map(d=>d.dataset.id);
   const isMatched = p => p.matches.length>0;
   let list = [...PRODUCTS];
-  if($("onlyOpen").checked) list.sort((a,b)=>isMatched(a)-isMatched(b));
+  const order = $("order").value;
+  if(order==="unmatched") list.sort((a,b)=>isMatched(a)-isMatched(b));
+  if(order==="barcode") list.sort((a,b)=>(b.ean_candidates.length>0)-(a.ean_candidates.length>0));
   const n = PRODUCTS.filter(isMatched).length;
   $("meta").textContent = `${n} of ${PRODUCTS.length} items matched to at least one source`;
   $("list").innerHTML = list.map(p=>{
     const badges = SOURCES.map(s=>{
       const m = p.matches.filter(x=>x.source===s);
       return `<span class="badge ${m.length?'on':''}">${SRC[s]||s}${m.length?' ✓':''}</span>`;
-    }).join("");
+    }).join("") + (p.ean_candidates.length ? `<span class="badge cand">barcode?</span>` : "");
     return `<details class="prod" data-id="${p.id}" ${open.includes(String(p.id))?'open':''}>
       <summary><span class="nm">${esc(p.name)}</span>
         <span class="badges">${badges}</span>
@@ -145,6 +151,21 @@ async function findByBarcode(pid){
   catch(e){ st.suggest = []; st.msg = e.message; st.err = true; }
   renderPanel(pid);
 }
+// Barcode candidates found by name (items without an EAN). Picking one sets the EAN and
+// runs the barcode match across every store.
+function eanBlock(pid){
+  const p = PRODUCTS.find(x=>x.id==pid), st = state(pid);
+  if(p.ean || !p.ean_candidates.length) return "";
+  const label = s => s>=1.1 ? "strong" : s>=0.85 ? "good" : "weak";
+  return `<div class="suggest eans"><div class="sh">Barcode candidates <span class="hint">by name at Globus / Tesco</span>
+      <button class="btn ghost" data-eannone ${st.busy?'disabled':''}>None of these</button></div>
+    <ul class="cands">${p.ean_candidates.map((c,i)=>`<li class="cand">
+      <span class="cn"><span class="src">${esc(c.sources)}</span> ${esc(c.name)}</span>
+      <span class="offers"><span class="off">${CZK(c.price)}${c.amount?' / '+esc(c.amount):''}</span>
+        <span class="off none">EAN ${esc(c.ean)}</span><span class="score ${label(c.score)}">${label(c.score)} match</span></span>
+      <button class="btn ghost" data-useean="${i}" ${st.busy?'disabled':''}>Use this barcode</button></li>`).join("")}</ul></div>`;
+}
+
 function suggestBlock(pid){
   const st = state(pid);
   if(st.suggest===undefined) return "";
@@ -197,6 +218,7 @@ function renderPanel(pid){
     <details class="edit"><summary>Edit item</summary>${itemForm(p)}
       <div class="searchrow"><button class="btn ghost" data-save>Save</button>
         <button class="btn ghost danger" data-del>Delete item</button></div></details>
+    ${eanBlock(pid)}
     ${suggestBlock(pid)}
     <div class="searchrow">
       <span class="seg">${SOURCES.map(s=>`<button data-src="${s}" aria-pressed="${s===st.source}">${SRC[s]||s}</button>`).join("")}</span>
@@ -227,6 +249,10 @@ function renderPanel(pid){
     if(!confirm(`Delete "${p.name}" and everything matched to it?`)) return;
     await api("product/delete", {id: +pid}); await reloadProducts(true);
   };
+  el.querySelectorAll("[data-useean]").forEach(b=>b.onclick=()=>useEan(pid, p.ean_candidates[+b.dataset.useean]));
+  el.querySelector("[data-eannone]")?.addEventListener("click", ()=>run(pid, "Noted.", async st=>{
+    await api("eans/dismiss", {product_id: +pid}); st.msg = "No barcode for this one."; await reloadProducts();
+  }));
   el.querySelectorAll("[data-sug]").forEach(b=>b.onclick=()=>linkSuggested(pid, [st.suggest[+b.dataset.sug]]));
   el.querySelector("[data-linkall]")?.addEventListener("click", ()=>linkSuggested(pid, [...st.suggest]));
   el.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
@@ -254,6 +280,14 @@ function pick(pid, c, packs){
     st.msg = `Matched ${c.name}: ${d.offers} current offer(s).`;
     await reloadProducts();
   });
+}
+
+function useEan(pid, c){
+  return run(pid, "Setting the barcode…", async st=>{
+    await api("product/update", {id: +pid, ean: c.ean});
+    await reloadProducts();
+    st.suggest = undefined; st.msg = `Barcode ${c.ean} set. Looking it up at every store…`;
+  }).then(()=>findByBarcode(pid));
 }
 
 function linkSuggested(pid, hits){
@@ -286,11 +320,11 @@ async function reloadProducts(full=false){
     el.querySelector(".badges").innerHTML = SOURCES.map(s=>{
       const on = p.matches.some(x=>x.source===s);
       return `<span class="badge ${on?'on':''}">${SRC[s]||s}${on?' ✓':''}</span>`;
-    }).join("");
+    }).join("") + (p.ean_candidates.length ? `<span class="badge cand">barcode?</span>` : "");
   });
 }
 
-$("onlyOpen").onchange = render;
+$("order").onchange = render;
 
 // ---- add an item
 function fillCats(){
@@ -329,17 +363,20 @@ $("addGo").onclick = async ()=>{
     if(el){ el.open = true; el.scrollIntoView({behavior:"smooth", block:"start"}); }
   }catch(e){ $("addStatus").textContent = e.message; $("addStatus").classList.add("err"); }
 };
-async function pollCrawl(){
-  const d = await api("crawl").catch(()=>null);
+// Long jobs run in the server; poll their log. name = crawl | eans
+async function pollJob(name, label){
+  const d = await api(name).catch(()=>null);
   if(!d) return;
   const last = d.log.trim().split("\n").pop() || "";
-  $("crawl").disabled = d.running;
-  $("gstatus").textContent = d.running ? `Crawling Kupi… ${last}` : (last.startsWith("crawl") ? last : $("gstatus").textContent);
-  if(d.running) setTimeout(pollCrawl, 4000);
-  else if(last.startsWith("crawl done")) reloadProducts();
+  $(name).disabled = d.running;
+  if(d.running) $("gstatus").textContent = `${label}… ${last.trim()}`;
+  else if(/done/.test(last)) $("gstatus").textContent = last.trim();
+  if(d.running) setTimeout(()=>pollJob(name, label), 4000);
+  else if(/done/.test(last)) reloadProducts(true);
 }
-$("crawl").onclick = async ()=>{ await api("crawl", {}); pollCrawl(); };
-pollCrawl();
+$("crawl").onclick = async ()=>{ await api("crawl", {}); pollJob("crawl", "Crawling Kupi"); };
+$("eans").onclick = async ()=>{ await api("eans", {}); pollJob("eans", "Finding barcodes"); };
+pollJob("crawl", "Crawling Kupi"); pollJob("eans", "Finding barcodes");
 $("refresh").onclick = async ()=>{
   const b = $("refresh"); b.disabled = true;
   $("gstatus").textContent = "Fetching store prices of every matched item…";

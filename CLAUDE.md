@@ -16,8 +16,12 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   each linked to its Rohlík product id (`pack_note` = how often it was ordered). Units follow
   Rohlík's own (kg / l / ks), stated pack sizes win over price/unitPrice; avocado + lettuce
   per piece. Needs created: Voda neperlivá, Voda perlivá, Limetky, Čerstvé mléko plnotučné,
-  Dezinfekční ubrousky, Petržel hladkolistá, Baby mrkev. No EANs yet (Rohlík has none) ->
-  next step: name search at Globus/Tesco to find barcodes, user confirms.
+  Dezinfekční ubrousky, Petržel hladkolistá, Baby mrkev.
+- **Barcodes by name** (`find-eans`, or "Find barcodes" on the match screen; server job):
+  for items without an EAN (loose produce skipped), search Globus + Tesco by name, score
+  hits (share of our name's words, brand must match, pack size +/-, both stores agree
+  +0.1), keep >= 0.6 in `ean_candidate`; `ean_lookup` records what was searched/dismissed.
+  Match screen: "Use this barcode" sets the EAN and runs the barcode match across stores.
 - **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
   VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
 - **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):

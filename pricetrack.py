@@ -26,7 +26,7 @@ Usage:
     python pricetrack.py export                        writes dashboard/prices.json
     python pricetrack.py serve                         local dashboard + match screen :8765
 """
-import argparse, csv, json, os, re, sqlite3, time, datetime as dt
+import argparse, csv, json, os, re, sqlite3, sys, time, datetime as dt
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -625,7 +625,7 @@ class Globus:
         return store_offer("globus", "Globus", n["catalogNumber"], n["name"], n.get("sellUnitSizeText"),
                            f"https://globusonline.cz/{n['slug'].lstrip('/')}" if n.get("slug") else
                            "https://globusonline.cz", float(p["priceWithVat"]),
-                           float(orig) if orig else None, note=f"−{disc:.0f} %" if disc else None,
+                           float(orig) if orig else None, note=f"−{float(disc):.0f} %" if disc else None,
                            ean=n.get("ean"))
 
     def search(self, query, n=12):
@@ -1188,6 +1188,93 @@ def fetch(which):
         c.commit()
     c.close(); print("fetch done")
 
+# ---------------------------------------------------------------- barcodes by name
+# Items without an EAN (e.g. imported from Rohlík, which publishes none) get barcode
+# candidates from stores whose name search returns EANs (Globus, Tesco). The user picks one;
+# setting the EAN then lets the barcode match (/api/suggest) link every store at once.
+EAN_SOURCES = ("globus", "tesco")
+EAN_STOP = {"balení", "baleni", "ks", "kus", "bio", "cca", "volně", "vanička", "sáček", "rohlik", "cz",
+            "the", "and", "s", "v", "z", "na", "pro", "a", "se", "do"}
+LOOSE = re.compile(r"\b1\s*ks\b|volně|volná|volné|volný|svazek|květináč|\bcca\b", re.I)
+
+def _tokens(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", (s or "").lower())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return {t for t in re.findall(r"[a-z0-9]+", s) if len(t) > 1 and not t.isdigit()} - EAN_STOP
+
+def ean_score(product, cand_name, cand_amount):
+    """0..~1.35: share of our name's words found in the candidate, +0.25 when the pack size
+    agrees (-0.25 when it clearly doesn't), -0.4 when the brand (first word) is missing."""
+    want = _tokens(default_query(product["name"]))
+    if not want: return 0.0
+    got = _tokens(cand_name)
+    score = len(want & got) / len(want)
+    brand = _tokens(re.sub(r"^(rohlik\.cz|bio)\s+", "", product["name"], flags=re.I).split()[0])
+    if brand and not brand & got: score -= 0.4
+    unit, qty = infer_unit(f"{cand_name} {cand_amount}", None)
+    same = unit == product["unit"] or {unit, product["unit"]} == {"kg", "l"}  # 450 g kefír = 450 ml
+    if same and product["unit_qty"]:
+        ratio = qty / product["unit_qty"]
+        score += 0.25 if 0.95 <= ratio <= 1.05 else (-0.25 if ratio < 0.8 or ratio > 1.25 else 0)
+    return round(score, 3)
+
+def ean_candidates(product, per_source=3, min_score=0.6):
+    """Search the EAN-returning stores by name; best-scoring hits that carry an EAN."""
+    out = []
+    q = default_query(product["name"])
+    queries = [q] + ([" ".join(q.split()[:3])] if len(q.split()) > 3 else [])
+    for name in EAN_SOURCES:
+        src, hits = source(name), []
+        for query in queries:  # full name first, then a shorter one if nothing came back
+            try:
+                hits = [o for cd in src.search(query) for o in cd["offers"][:1] if o.get("ean")]
+            except Exception as e:
+                print(f"  [{name}] {e}"); hits = []
+            time.sleep(3 if name == "globus" else 1.5)  # globus robots.txt: crawl-delay 3
+            if hits: break
+        scored = sorted(((ean_score(product, o["name"], o["amount"]), o) for o in hits),
+                        key=lambda x: -x[0])
+        out += [dict(source=name, ean=o["ean"], name=o["name"], amount=o["amount"],
+                     price=o["price_incl"], score=sc) for sc, o in scored[:per_source] if sc >= min_score]
+    merged = {}
+    for x in sorted(out, key=lambda x: -x["score"]):  # same EAN from both stores = one, stronger
+        if x["ean"] in merged:
+            m = merged[x["ean"]]; m["sources"].append(x["source"]); m["score"] = round(m["score"] + 0.1, 3)
+        else:
+            merged[x["ean"]] = dict(x, sources=[x["source"]])
+    return sorted(merged.values(), key=lambda x: -x["score"])
+
+def find_eans(redo=False):
+    """Background job: barcode candidates for every item without an EAN (loose produce skipped).
+    ~3.5 s an item (Globus asks for 3 s between requests). Already-searched items are skipped
+    unless redo."""
+    c = conn()
+    done = set() if redo else {r["product_id"] for r in c.execute("SELECT product_id FROM ean_lookup")}
+    todo = [p for p in c.execute("SELECT * FROM product WHERE ean IS NULL ORDER BY id")
+            if p["id"] not in done and not LOOSE.search(p["name"])]
+    print(f"looking up barcodes for {len(todo)} items (~{len(todo) * 3.5 / 60:.0f} min)")
+    found = 0
+    for i, p in enumerate(todo, 1):
+        cands = ean_candidates(p)
+        c.execute("DELETE FROM ean_candidate WHERE product_id=?", (p["id"],))
+        c.executemany("""INSERT INTO ean_candidate(product_id,ean,sources,name,amount,price,score)
+                         VALUES (?,?,?,?,?,?,?)""",
+                      [(p["id"], x["ean"], ",".join(x["sources"]), x["name"], x["amount"], x["price"],
+                        x["score"]) for x in cands[:5]])
+        c.execute("INSERT OR REPLACE INTO ean_lookup(product_id,ts,found,dismissed) VALUES (?,?,?,0)",
+                  (p["id"], today(), len(cands)))
+        found += bool(cands)
+        print(f"  {i}/{len(todo)}  {p['name'][:40]:40} {len(cands)} candidate(s)")
+    c.close()
+    print(f"barcodes done: candidates for {found} of {len(todo)} items")
+
+def ean_dismiss(product_id):
+    c = conn()
+    c.execute("DELETE FROM ean_candidate WHERE product_id=?", (product_id,))
+    c.execute("UPDATE ean_lookup SET dismissed=1 WHERE product_id=?", (product_id,))
+    c.close()
+
 # ---------------------------------------------------------------- products (add / edit / delete)
 PRODUCT_FIELDS = ("ean", "name", "category", "vat_pct", "unit", "unit_qty", "pack_note")
 
@@ -1220,6 +1307,7 @@ def product_update(pid, **fields):
     try:
         c.execute(f"UPDATE product SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
                   (*sets.values(), pid))
+        if sets.get("ean"): c.execute("DELETE FROM ean_candidate WHERE product_id=?", (pid,))
         c.commit()
     except sqlite3.IntegrityError:
         raise ValueError(f"an item with EAN {sets.get('ean')} already exists")
@@ -1435,6 +1523,9 @@ def products_status():
                                                    promo_until, club
                                             FROM v_offer WHERE product_id IS NOT NULL""")]
     stores = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM store")}
+    ecand = {}
+    for r in c.execute("SELECT * FROM ean_candidate ORDER BY score DESC"):
+        ecand.setdefault(r["product_id"], []).append(dict(r))
     deals = [dict(r) for r in c.execute("""SELECT product_id, slug, store_id, store_name, amount,
                                                   price_incl, valid_from, valid_to AS promo_until,
                                                   club, note FROM v_deal
@@ -1442,6 +1533,7 @@ def products_status():
     c.close()
     for p in prods:
         p["query"] = default_query(p["name"])
+        p["ean_candidates"] = ecand.get(p["id"], []) if not p["ean"] else []
         p["matches"] = []
         for w in (w for w in watches if w["product_id"] == p["id"]):
             s = source(w["source"])
@@ -1463,20 +1555,34 @@ def serve(port):
     from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
     from urllib.parse import urlparse, parse_qs
     import functools, traceback
-    import threading, io, contextlib
+    import threading, io
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    crawl_state = {"thread": None, "log": io.StringIO()}
+    JOBS = {"crawl": crawl, "eans": find_eans}  # long runs, one thread each, log kept for the UI
+    jobs = {name: {"thread": None, "log": io.StringIO()} for name in JOBS}
 
-    def start_crawl():
-        if crawl_state["thread"] and crawl_state["thread"].is_alive(): return False
-        crawl_state["log"] = log = io.StringIO()
+    class JobLog(io.StringIO):  # print() from the job thread lands here (stdout is swapped per thread)
+        pass
+    _stdout = sys.stdout
+    class ThreadStdout:
+        def write(self, s): return getattr(threading.current_thread(), "joblog", _stdout).write(s)
+        def flush(self): pass
+    sys.stdout = ThreadStdout()
+
+    def start_job(name):
+        j = jobs[name]
+        if j["thread"] and j["thread"].is_alive(): return False
+        j["log"] = log = JobLog()
         def work():
-            with contextlib.redirect_stdout(log):
-                try: crawl()
-                except Exception as e: print(f"crawl failed: {e}")
-        crawl_state["thread"] = threading.Thread(target=work, daemon=True)
-        crawl_state["thread"].start()
+            threading.current_thread().joblog = log
+            try: JOBS[name]()
+            except Exception as e: print(f"{name} failed: {e}")
+        j["thread"] = threading.Thread(target=work, daemon=True)
+        j["thread"].start()
         return True
+
+    def job_status(name):
+        t = jobs[name]["thread"]
+        return dict(running=bool(t and t.is_alive()), log=jobs[name]["log"].getvalue()[-2000:])
 
     class Handler(SimpleHTTPRequestHandler):
         def _json(self, obj, code=200):
@@ -1514,10 +1620,8 @@ def serve(port):
                     return self._json(dict(items=cart_items()))
                 if u.path == "/api/products":
                     return self._json(dict(products=products_status(), sources=list(SOURCES)))
-                if u.path == "/api/crawl":
-                    t = crawl_state["thread"]
-                    return self._json(dict(running=bool(t and t.is_alive()),
-                                           log=crawl_state["log"].getvalue()[-2000:]))
+                if u.path in ("/api/crawl", "/api/eans"):
+                    return self._json(job_status(u.path.rsplit("/", 1)[1]))
                 if u.path == "/api/suggest":
                     return self._json(dict(results=suggest(int(q["product_id"]))))
                 if u.path == "/api/lookup":
@@ -1560,8 +1664,11 @@ def serve(port):
                 if u == "/api/cart/remove":
                     cart_remove(a.get("id"), a.get("checked_only", False), a.get("all", False))
                     return self._json(dict(ok=True))
-                if u == "/api/crawl":
-                    return self._json(dict(ok=True, started=start_crawl()))
+                if u in ("/api/crawl", "/api/eans"):
+                    return self._json(dict(ok=True, started=start_job(u.rsplit("/", 1)[1])))
+                if u == "/api/eans/dismiss":
+                    ean_dismiss(a["product_id"])
+                    return self._json(dict(ok=True))
                 if u == "/api/fetch":
                     fetch(a.get("sources")); export()
                     return self._json(dict(ok=True))
@@ -1594,6 +1701,8 @@ def main():
     m.add_argument("--pick", type=int, help="candidate number (skip the prompt)")
     cr = sub.add_parser("crawl", help="weekly Kupi flyer crawl (~10-20 min)")
     cr.add_argument("--chains", help="comma list of kupi chain slugs (default: Kupi.CRAWL_CHAINS)")
+    fe = sub.add_parser("find-eans", help="barcode candidates by name for items without one")
+    fe.add_argument("--redo", action="store_true", help="search already-searched items again")
     f = sub.add_parser("fetch"); f.add_argument("--source", help="comma list, e.g. rohlik,kupi")
     st = sub.add_parser("store"); stsub = st.add_subparsers(dest="scmd", required=True)
     sm = stsub.add_parser("member", help="do you hold this chain's loyalty card?")
@@ -1613,6 +1722,7 @@ def main():
         if bool(a.ean) == bool(a.need): ap.error("match needs an EAN or --need, not both")
         match(a.source, a.ean, a.need, a.query, a.pick, a.qty)
     elif a.cmd == "crawl": crawl(a.chains.split(",") if a.chains else None)
+    elif a.cmd == "find-eans": find_eans(a.redo)
     elif a.cmd == "fetch": fetch(a.source.split(",") if a.source else None)
     elif a.cmd == "matrix": matrix()
     elif a.cmd == "export": export()

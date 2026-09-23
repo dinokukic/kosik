@@ -161,3 +161,9 @@
     .todo .tick input:checked{background:#000}
     .todo .drift{color:#000}
   }
+  .badge.cand{border-color:#b07a2a;color:#b07a2a}
+  .suggest.eans{border-color:var(--line);background:transparent}
+  .suggest .hint{font-size:.7rem;color:var(--muted);font-style:italic;margin-left:.4rem}
+  .score{font-size:.66rem;padding:.08rem .4rem;border-radius:1rem;border:1px solid var(--line);color:var(--muted)}
+  .score.strong{border-color:var(--win);color:var(--win);background:var(--winbg)}
+  .score.good{border-color:var(--ink);color:var(--ink)}

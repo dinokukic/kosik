@@ -130,6 +130,24 @@ CREATE TABLE IF NOT EXISTS cart_item (
   added       TEXT NOT NULL
 );
 
+-- Barcode candidates for items without an EAN (name search at EAN-returning stores).
+CREATE TABLE IF NOT EXISTS ean_candidate (
+  product_id INTEGER NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+  ean        TEXT NOT NULL,
+  sources    TEXT,                          -- 'globus,tesco'
+  name       TEXT,
+  amount     TEXT,
+  price      REAL,
+  score      REAL,                          -- name overlap + pack size (+ both stores agree)
+  PRIMARY KEY (product_id, ean)
+);
+CREATE TABLE IF NOT EXISTS ean_lookup (     -- which items were searched, and outcome
+  product_id INTEGER PRIMARY KEY REFERENCES product(id) ON DELETE CASCADE,
+  ts         TEXT NOT NULL,
+  found      INTEGER,
+  dismissed  INTEGER NOT NULL DEFAULT 0     -- user said: none of these
+);
+
 CREATE INDEX IF NOT EXISTS idx_offering_product ON offering(product_id);
 CREATE INDEX IF NOT EXISTS idx_offering_need ON offering(need_id);
 CREATE INDEX IF NOT EXISTS idx_price_ts ON price(ts);

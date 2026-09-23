@@ -38,6 +38,7 @@ python pricetrack.py matrix                    # rows x stores in the terminal
 python pricetrack.py match rohlik 8593803421216 --query "jihočeské máslo 250"
 python pricetrack.py match kupi 8593803421216  # link an item to its Kupi product (flyer deals)
 python pricetrack.py crawl                     # weekly: every current flyer offer (~10-20 min)
+python pricetrack.py find-eans                 # barcode candidates by name for items without one
 python pricetrack.py fetch                     # store prices of everything matched
 python pricetrack.py store member kaufland off # don't count Kaufland Card prices
 

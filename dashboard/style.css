@@ -93,3 +93,17 @@
   .err{color:#b04a3a}
   .cand .packs{grid-column:1;display:flex;flex-wrap:wrap;gap:.2rem .7rem;font-size:.74rem;color:var(--muted)}
   .cand .packs label{display:inline-flex;gap:.25rem;align-items:center;color:var(--ink)}
+  th.flyer,td.flyer{border-left:1px solid var(--line);border-right:2px solid var(--line)}
+  td.flyer .tot{white-space:nowrap}
+  .addbox{border:1px dashed var(--line);border-radius:.6rem;padding:.2rem .9rem;margin-bottom:1.2rem}
+  .addbox>summary{cursor:pointer;padding:.5rem 0;font-size:.95rem}
+  .addform{padding:.3rem 0 .9rem}
+  .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:.6rem .8rem;margin:.6rem 0 .8rem}
+  .fields label{display:flex;flex-direction:column;gap:.2rem;font-size:.72rem;color:var(--muted)}
+  .fields label.wide{grid-column:1/-1}
+  .fields input,.fields select{padding:.32rem .5rem;border:1px solid var(--line);border-radius:.4rem;
+    background:transparent;color:var(--ink);font-size:.88rem;min-width:0}
+  .fields select option{background:var(--paper)}
+  details.edit{margin:0 0 .8rem;font-size:.84rem}
+  details.edit>summary{cursor:pointer;color:var(--muted)}
+  .btn.danger{color:#b04a3a;border-color:#b04a3a}

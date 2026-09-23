@@ -24,12 +24,25 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   product by EAN or to a need with `--need`), `fetch` (by cached id), `need add|link`,
   `store member <chain> on|off`, `matrix`, `export`.
 - **SOURCE ≠ STORE.** A source is where prices come from (`offering.source`); a store is
-  who sells. Rohlík is both. **Kupi is an aggregator, never a store**: its offers are
-  written under the chain (tesco, albert, kaufland…). Hand-entered prices are `manual`.
+  who sells. Rohlík is both. Hand-entered prices are `manual`.
+- **DECIDED 2026-09-23: store prices come from the stores directly; Kupi is a separate
+  FLYER-DEALS LAYER.** Store columns in the matrix = direct sources only (Rohlík now; more
+  e-shops next). Kupi never writes offerings: a weekly full crawl (`crawl`) stores every
+  current flyer offer of the tracked chains in `deal`; a kupi `watch` (slug → item) links
+  deals to your items, and each matrix row shows its best current deal in a separate
+  "flyer deal · kupi.cz" column, marked cheapest when it beats every store price.
 - **Rohlík adapter: VERIFIED & WORKING** (`Rohlik` class in pricetrack.py; standalone
   `bunny/rohlik_probe.py`). See "Rohlík API" below. Rohlík has **no EAN search**.
 - **Kupi adapter: VERIFIED & WORKING** (`Kupi` class). See "Kupi" below.
-- **Heureka / Makro: NOT WIRED** — need the same live-inspect treatment first.
+- **Makro adapter: VERIFIED & WORKING** (`Makro` class), no login: anonymous search gives
+  the NET price per pack; VAT is added from the item's `vat_pct` (matches the receipt to the
+  haléř). Matched per pack by EAN (`store_ref` = EAN). A live price for a store retires the
+  hand-entered (`manual`) price for that store + item. Details: `docs/store-apis.md`.
+- **Direct store connectors — PLANNED, surveyed** (`docs/store-apis.md`): Globus, Košík.cz,
+  dm, Tesco, Billa, Rossmann, Teta. Lidl, Albert, Kaufland, Penny = flyer only (Kupi).
+- **Items can be added / edited / deleted in the UI** (match screen → "Add an item"; barcode
+  lookup via Makro prefills name + EAN). New items live in the DB only; `watchlist.csv` is
+  just the original seed.
 - **Dashboard** (`dashboard/index.html`): the matrix (rows × stores, per-unit, cheapest
   marked, category filter) from `prices.json`. Basket view NOT built yet.
 
@@ -116,11 +129,18 @@ per-store product ids == the matching step. Add-item UI and match UI are the sam
 - **Kupi lumps variants into one product** (Pampers Premium Care = all diaper sizes, as
   68/52/44 ks packs; "1-ks" = price per pack with no count). The match screen offers a
   size picker; the choice is stored in `watch.packs`.
-- Match once per product (`match kupi <ean>` / `--need`); `fetch` re-reads each matched
-  product page (1.5 s apart) and new chains carrying it are added automatically.
+- Match once per product (`match kupi <ean>` / `--need`, or the match screen).
+- **Weekly crawl** (`pricetrack.py crawl`, or the button on the match screen): every page
+  of `/slevy/<chain>` for `Kupi.CRAWL_CHAINS` (~20 grocery/drugstore chains, ~18 products a
+  page, 1.5 s apart; Tesco alone ~50 pages; whole run ~10-20 min), then the product pages
+  of watched items (catches chains outside the list). Category pages (`/slevy/<category>`)
+  are NOT usable: they show only one offer per product.
+- A deal counts while its date window covers today AND it was seen in its chain's latest
+  crawl (`crawl_log`; chains outside the list use the last full run, `store_id='*'`).
 
-## Other stores — same recipe, still to do
-For Heureka (price floor),
+## Other stores
+Endpoints for every surveyed store are in `docs/store-apis.md` (Tesco's public API key is
+in `.env` as `TESCO_XAPI_KEY`). For Heureka (price floor),
 Makro (needs the user's session cookie; shows prices *bez DPH* — add VAT back using the
 item's vat_pct): open the live site logged in, watch DevTools → Network for the real
 search + price endpoints, capture the JSON shape, then write the adapter like Rohlík's.

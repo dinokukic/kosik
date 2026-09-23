@@ -16,7 +16,8 @@ Usage:
     python pricetrack.py search rohlik "pampers 1"     candidates from a source (rohlik | kupi)
     python pricetrack.py match rohlik 8006540858073    search by product name, pick, cache
     python pricetrack.py match rohlik --need "4-ply TP" --query "toaletní papír 4vrstvý"
-    python pricetrack.py fetch [--source rohlik]       refresh prices of matched offerings
+    python pricetrack.py fetch [--source rohlik]       refresh store prices of matched items
+    python pricetrack.py crawl                         weekly: every current Kupi flyer offer
     python pricetrack.py need add "4-ply TP" --unit roll
     python pricetrack.py match kupi 8593803421216      flyer offers at every chain (aggregator)
     python pricetrack.py need link "4-ply TP" 8584014858502 [--offering 12]
@@ -108,6 +109,7 @@ def init():
     c = conn(); c.executescript(SCHEMA.read_text(encoding="utf-8"))
     if "packs" not in [r["name"] for r in c.execute("PRAGMA table_info(watch)")]:
         c.execute("ALTER TABLE watch ADD COLUMN packs TEXT")
+    c.execute("DELETE FROM offering WHERE source='kupi'")  # Kupi lives in `deal` now
     c.executemany("""INSERT INTO store(id,name,url,prices_ex_vat) VALUES (?,?,?,?)
                      ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url,
                        prices_ex_vat=excluded.prices_ex_vat""", STORES)
@@ -188,6 +190,7 @@ def http_get(url, params=None, headers=None, json=True):
     return r.json() if json else r.text
 
 class Rohlik:
+    aggregator = False
     """VERIFIED live 2026-09-23. No EAN search: name -> autocomplete ids -> product cards.
     Prices include VAT. ROHLIK_COOKIE pins prices to your delivery region (Prague 1)."""
     BASE = "https://www.rohlik.cz"
@@ -241,6 +244,11 @@ class Kupi:
     page sections -> dedupe by offer id. One chain can have several offers for one product
     (card price vs regular, different flyers); all are stored, the view picks per today."""
     BASE = "https://www.kupi.cz"
+    aggregator = True  # prices go to the deal table (flyer layer), not to store offerings
+    # Chains crawled weekly (/slevy/<slug>, ~18 products a page). Grocery + drugstore only.
+    CRAWL_CHAINS = ["albert", "billa", "tesco", "kaufland", "lidl", "penny-market", "globus",
+                    "makro", "kosik-cz", "flop", "flop-top", "cba", "coop", "hruska", "jip",
+                    "eso-market", "ratio", "dm-drogerie", "teta-drogerie"]  # no Rossmann on Kupi
     # kupi chain slug -> our store id (unknown slugs become stores under Kupi's name).
     # NOTE: Kupi also carries Makro flyers; unverified whether those are bez DPH.
     CHAINS = {"penny-market": "penny", "teta-drogerie": "teta", "dm-drogerie": "dm"}
@@ -307,8 +315,21 @@ class Kupi:
     def _finish(self, slug, name, offers):
         for o in offers:
             o.update(store_ref=f"kupi:{slug}:{o['key']}", name=f"{name} {o['amount']}".strip(),
-                     url=f"{self.BASE}/sleva/{slug}")
+                     product=name, slug=slug, url=f"{self.BASE}/sleva/{slug}")
         return offers
+
+    def crawl_chain(self, chain, max_pages=150):
+        """Every current flyer offer of one chain, page by page (1.5 s apart)."""
+        out = []
+        for page in range(1, max_pages + 1):
+            if page > 1: time.sleep(1.5)
+            html = http_get(f"{self.BASE}/slevy/{chain}", {"page": page} if page > 1 else None,
+                            json=False)
+            rows, prods = self._rows(html), self._products(html)
+            if not prods: break
+            for pid, (slug, name) in prods.items():
+                out += self._finish(slug, name, rows.get(pid, []))
+        return out
 
     def search(self, query):
         page = http_get(f"{self.BASE}/hledej", {"f": query}, json=False)
@@ -330,11 +351,92 @@ class Kupi:
 
     def ref_of(self, store_ref): return store_ref.split(":")[1]
 
-# Heureka / Makro: not wired yet. Each needs the live-inspect treatment Rohlík and Kupi got
+class Makro:
+    """VERIFIED live 2026-09-23 (logged-in inspection + anonymous calls). NO login needed:
+    the anonymous search returns the NET (bez DPH) price per single pack, which x (1+VAT)
+    equals the receipt exactly (butter 52.30 -> 58.58, Pampers 369 -> 446.49).
+      search:  GET /searchdiscover/articlesearch/search?storeId=&query=<name|EAN>&rows=
+               -> results {variantId: {price (net, the variant's smallest pack), offers}}
+      detail:  GET /evaluate.article.v1/betty-variants?storeIds=&ids=<variantId>&ids=...
+               -> per bundle (pack): description, gtins, bundleSize; article 'food' flag.
+               Prices here are null unless logged in (then sellingPriceInfo has net/gross).
+    A NAME search can price a case (40 x 250 g); matching is per bundle and prices are
+    always re-read by the bundle's EAN. store_ref = that EAN. Store 00005 = Praha Černý Most."""
+    aggregator = False
+    BASE = "https://sortiment.makro.cz"
+    STORE = os.environ.get("MAKRO_STORE", "00005")
+    UAH = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+           "Accept": "application/json"}
+
+    def _search(self, query, rows=12):
+        return http_get(f"{self.BASE}/searchdiscover/articlesearch/search",
+                        dict(storeId=self.STORE, language="cs-CZ", country="CZ", query=query,
+                             rows=rows, page=1), self.UAH)
+
+    def _variants(self, ids):
+        if not ids: return {}
+        params = [("storeIds", self.STORE), ("country", "CZ"), ("locale", "cs-CZ")] + \
+                 [("ids", i) for i in ids]
+        return http_get(f"{self.BASE}/evaluate.article.v1/betty-variants", params, self.UAH
+                        ).get("result", {})
+
+    def _bundles(self, ids, prices):
+        """[(ean, description, pieces, food, net_price_or_None)] for the given variant ids."""
+        out = []
+        for art in self._variants(ids).values():
+            for v in art.get("variants", {}).values():
+                vid = (v.get("bettyVariantId") or {}).get("bettyVariantId")
+                bundles = list((v.get("bundles") or {}).values())
+                smallest = min((int(b.get("bundleSize") or 1) for b in bundles), default=1)
+                for b in bundles:
+                    eans = [g.get("number") for g in b.get("gtins") or [] if g.get("number")]
+                    if not eans: continue
+                    n = int(b.get("bundleSize") or 1)
+                    # the search price belongs to the variant's smallest pack
+                    net = prices.get(vid) if n == smallest else None
+                    out.append((eans[0], b.get("description", ""), n, bool(art.get("food")), net))
+        return out
+
+    def _offer(self, ean, desc, net, food, vat=None):
+        vat = vat if vat is not None else (12 if food else 21)
+        return dict(store_id="makro", store_name="Makro", store_ref=ean, name=desc, amount="",
+                    url=f"{self.BASE}/shop/search?q={ean}", price_incl=round(net * (1 + vat / 100), 2),
+                    price_net=net, food=food, is_promo=False, valid_from=None, promo_until=None,
+                    club=None, note=None, ref="")
+
+    def search(self, query):
+        res = self._search(query).get("results", {})
+        prices = {k: v.get("price") for k, v in res.items()}
+        cands = []
+        for ean, desc, n, food, net in self._bundles(list(res)[:10], prices):
+            # VAT depends on the item (Makro's 'food' flag is not the VAT class: diapers are
+            # 'food'), so candidates show the net price; save_offers adds the item's VAT.
+            offers = [dict(self._offer(ean, desc, net, food), price_incl=net, amount="bez DPH")] \
+                if net is not None else []
+            cands.append(dict(ref=ean, name=desc, url=f"{self.BASE}/shop/search?q={ean}", offers=offers))
+        return cands
+
+    def fetch(self, refs):
+        """Net price per EAN (one search each, 1 s apart); VAT is applied in save_offers."""
+        out = {}
+        for i, ean in enumerate(refs):
+            if i: time.sleep(1.0)
+            res = self._search(ean, rows=3).get("results", {})
+            if not res: continue
+            vid, hit = next(iter(res.items()))
+            b = [x for x in self._bundles([vid], {vid: hit.get("price")}) if x[0] == ean]
+            if b and b[0][4] is not None:
+                out[ean] = [self._offer(ean, b[0][1], b[0][4], b[0][3])]
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+# Heureka: not wired yet. Each needs the live-inspect treatment Rohlík and Kupi got
 # before it gets a search()/fetch() adapter. Makro: needs MAKRO_COOKIE, shows bez DPH ->
 # add product.vat_pct back.
 
-SOURCES = {"rohlik": Rohlik, "kupi": Kupi}
+SOURCES = {"rohlik": Rohlik, "makro": Makro, "kupi": Kupi}
 
 def source(name):
     if name not in SOURCES:
@@ -367,6 +469,8 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
     unit_qty comes from the pack amount when it's in the row's unit; `qty` forces it."""
     target = product or need
     for o in offers:
+        if o.get("price_net") is not None and product is not None and product["vat_pct"]:
+            o = dict(o, price_incl=round(o["price_net"] * (1 + product["vat_pct"] / 100), 2))
         unit, guess = infer_unit(f"{o['name']} {o['amount']}", target["category"] if target else None)
         q = qty if qty is not None else (guess if target and unit == target["unit"] else None)
         if product is not None and q is not None and abs(q - product["unit_qty"]) < 1e-9:
@@ -378,12 +482,64 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
                               need["id"] if need else None, o["store_name"])
         record(c, oid, o["price_incl"], o["is_promo"], o["promo_until"],
                valid_from=o["valid_from"], club=o["club"], note=o["note"], ref=o["ref"])
+        if product is not None:  # a live price supersedes a hand-entered one for that store
+            c.execute("""UPDATE offering SET active=0 WHERE source='manual' AND store_id=?
+                         AND product_id=?""", (o["store_id"], product["id"]))
 
-def resolve_target(c, ean=None, need=None):
-    """-> (product_row | None, need_row | None). Exactly one of ean / need."""
-    if ean:
-        product = c.execute("SELECT * FROM product WHERE ean=?", (ean,)).fetchone()
-        if not product: raise ValueError(f"no product with EAN {ean}")
+def save_deals(c, offers, seen=None):
+    """Upsert Kupi flyer offers into the deal table (the flyer layer)."""
+    seen = seen or today()
+    for o in offers:
+        unit, qty = infer_unit(f"{o.get('product', '')} {o['amount']}", None)
+        c.execute("INSERT OR IGNORE INTO store(id,name) VALUES (?,?)", (o["store_id"], o["store_name"]))
+        c.execute("""INSERT INTO deal(ref,slug,product_name,store_id,store_name,pack_key,amount,unit,
+                                      unit_qty,price_incl,valid_from,valid_to,club,note,
+                                      first_seen,last_seen)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ON CONFLICT(ref) DO UPDATE SET price_incl=excluded.price_incl,
+                       valid_from=excluded.valid_from, valid_to=excluded.valid_to,
+                       club=excluded.club, note=excluded.note, amount=excluded.amount,
+                       unit=excluded.unit, unit_qty=excluded.unit_qty,
+                       last_seen=excluded.last_seen""",
+                  (o["ref"], o["slug"], o.get("product"), o["store_id"], o["store_name"],
+                   o.get("key"), o["amount"], unit, qty if unit != "pack" else None,
+                   o["price_incl"], o["valid_from"], o["promo_until"], o["club"], o["note"],
+                   seen, seen))
+
+def crawl(chains=None):
+    """Weekly Kupi crawl: every current flyer offer of the tracked chains, then the product
+    pages of watched items (catches chains outside the list). ~10-20 min, 1.5 s per page."""
+    k, c, t0 = Kupi(), conn(), time.time()
+    for chain in chains or Kupi.CRAWL_CHAINS:
+        try:
+            offers = k.crawl_chain(chain)
+        except Exception as e:  # fail soft: this chain keeps last week's deals until they end
+            print(f"  {chain:14} failed: {e}"); continue
+        save_deals(c, offers)
+        store_id = Kupi.CHAINS.get(chain, chain)
+        c.execute("INSERT OR REPLACE INTO crawl_log(store_id,ts,deals) VALUES (?,?,?)",
+                  (store_id, today(), len(offers)))
+        c.commit()
+        print(f"  {chain:14} {len(offers):5} offers  ({time.time() - t0:5.0f} s)")
+        time.sleep(1.5)
+    slugs = [r["ref"] for r in c.execute("SELECT DISTINCT ref FROM watch WHERE source='kupi'")]
+    if slugs:
+        got = k.fetch(slugs)
+        save_deals(c, [o for offers in got.values() for o in offers])
+    if not chains:  # a full run: deals from chains we don't crawl must be re-seen to count
+        c.execute("INSERT OR REPLACE INTO crawl_log(store_id,ts,deals) VALUES ('*',?,NULL)", (today(),))
+    c.commit()
+    n = c.execute("SELECT COUNT(*) FROM deal WHERE last_seen=?", (today(),)).fetchone()[0]
+    c.close()
+    print(f"crawl done: {n} current offers, {len(slugs)} watched products refreshed, "
+          f"{time.time() - t0:.0f} s")
+
+def resolve_target(c, ean=None, need=None, product_id=None):
+    """-> (product_row | None, need_row | None). One of product_id / ean / need."""
+    if product_id or ean:
+        product = c.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone() \
+            if product_id else c.execute("SELECT * FROM product WHERE ean=?", (ean,)).fetchone()
+        if not product: raise ValueError(f"no product {product_id or ean}")
         return product, None
     need_row = c.execute("SELECT * FROM need WHERE name=?", (need,)).fetchone()
     if not need_row: raise ValueError(f"no need named {need!r} (run: need add)")
@@ -399,13 +555,13 @@ def retire_missing(c, src, ref, product=None, need=None, returned=()):
         if s.ref_of(r["store_ref"]) == ref and r["store_ref"] not in keep:
             c.execute("UPDATE offering SET active=0 WHERE id=?", (r["id"],))
 
-def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None):
-    """Cache a picked candidate as a watch, then pull its current offers into offerings
-    linked to the product (`ean`) or need. Returns the offers saved (may be none: a Kupi
-    product with no flyer this week is still watched and picked up by later fetches)."""
+def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None, product_id=None):
+    """Cache a picked candidate as a watch, then pull its current offers: store offerings
+    for a store source, flyer deals for Kupi. Returns the offers (may be none: a Kupi
+    product with no flyer this week is still watched and picked up by later crawls)."""
     c = conn()
     try:
-        product, need_row = resolve_target(c, ean, need)
+        product, need_row = resolve_target(c, ean, need, product_id)
         packs = ",".join(packs) if isinstance(packs, (list, tuple)) else packs or None
         c.execute("""INSERT INTO watch(source,ref,name,product_id,need_id,qty,packs)
                      VALUES (?,?,?,?,?,?,?)
@@ -414,8 +570,11 @@ def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None):
                   (src, ref, name, product["id"] if product else None,
                    need_row["id"] if need_row else None, qty, packs))
         offers = source(src).fetch([ref]).get(ref, [])
-        keep = set(packs.split(",")) if packs else None
-        offers = [o for o in offers if not keep or not o.get("key") or o["key"] in keep]
+        if source(src).aggregator:
+            save_deals(c, offers)  # the flyer layer; pack filter applies in v_deal
+            c.commit()
+            keep = set(packs.split(",")) if packs else None
+            return [o for o in offers if not keep or not o.get("key") or o["key"] in keep]
         save_offers(c, src, offers, product, need_row, qty)
         retire_missing(c, src, ref, product, need_row, [o["store_ref"] for o in offers])
         c.commit()
@@ -423,11 +582,11 @@ def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None):
     finally:
         c.close()
 
-def unlink(src, ref, ean=None, need=None):
+def unlink(src, ref, ean=None, need=None, product_id=None):
     """Undo a match: drop the watch and this ref's offerings (with prices) from the target."""
     c = conn()
     try:
-        product, need_row = resolve_target(c, ean, need)
+        product, need_row = resolve_target(c, ean, need, product_id)
         col, val = ("product_id", product["id"]) if product else ("need_id", need_row["id"])
         c.execute(f"DELETE FROM watch WHERE source=? AND ref=? AND {col}=?", (src, ref, val))
         s = source(src)
@@ -472,8 +631,11 @@ def default_query(name):
     return re.sub(r"\s+", " ", q).strip(" .,").lower()
 
 def fetch(which):
+    """Refresh store prices of everything matched. Kupi is refreshed by `crawl` instead."""
     c = conn()
-    for src in which or list(SOURCES):
+    for src in which or [s for s, cls in SOURCES.items() if not cls.aggregator]:
+        if SOURCES[src].aggregator:
+            print(f"  {src}: flyer deals are refreshed by `crawl`"); continue
         watches = c.execute("SELECT * FROM watch WHERE source=?", (src,)).fetchall()
         if not watches:
             print(f"  {src}: nothing matched yet (run: match {src} <ean>)"); continue
@@ -497,6 +659,56 @@ def fetch(which):
                 print(f"  {src:6} {o['name'][:44]:44} {fmt_offer(o)}")
         c.commit()
     c.close(); print("fetch done")
+
+# ---------------------------------------------------------------- products (add / edit / delete)
+PRODUCT_FIELDS = ("ean", "name", "category", "vat_pct", "unit", "unit_qty", "pack_note")
+
+def product_add(name, category=None, vat_pct=None, ean=None, unit=None, unit_qty=None, pack_note=None):
+    """New item to track. Unit + units-per-pack are inferred from the name unless given."""
+    name = (name or "").strip()
+    if not name: raise ValueError("name is required")
+    u, q = infer_unit(name, category)
+    c = conn()
+    try:
+        cur = c.execute("""INSERT INTO product(ean,name,category,vat_pct,unit,unit_qty,pack_note)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        ((ean or "").strip() or None, name, category or None,
+                         int(vat_pct) if vat_pct not in (None, "") else None,
+                         unit or u, float(unit_qty) if unit_qty not in (None, "") else q, pack_note))
+        c.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError(f"an item with EAN {ean} already exists")
+    finally:
+        c.close()
+
+def product_update(pid, **fields):
+    sets = {k: v for k, v in fields.items() if k in PRODUCT_FIELDS}
+    if "ean" in sets: sets["ean"] = (sets["ean"] or "").strip() or None
+    if "unit_qty" in sets: sets["unit_qty"] = float(sets["unit_qty"])
+    if "vat_pct" in sets: sets["vat_pct"] = int(sets["vat_pct"]) if sets["vat_pct"] not in (None, "") else None
+    if not sets: return
+    c = conn()
+    try:
+        c.execute(f"UPDATE product SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                  (*sets.values(), pid))
+        c.commit()
+    except sqlite3.IntegrityError:
+        raise ValueError(f"an item with EAN {sets.get('ean')} already exists")
+    finally:
+        c.close()
+
+def product_delete(pid):
+    """Remove an item with everything matched to it (offerings + their prices, watches)."""
+    c = conn()
+    c.execute("DELETE FROM offering WHERE product_id=?", (pid,))
+    c.execute("DELETE FROM watch WHERE product_id=?", (pid,))
+    c.execute("DELETE FROM product WHERE id=?", (pid,))
+    c.commit(); c.close()
+
+def lookup(q):
+    """EAN (or name) -> what the barcode-aware stores call it, to prefill a new item."""
+    return [dict(source="makro", ean=cd["ref"], name=cd["name"]) for cd in Makro().search(q)[:8]]
 
 # ---------------------------------------------------------------- needs
 def need_add(name, unit, category):
@@ -525,36 +737,56 @@ def store_member(store_id, on):
     print(f"{store_id}: club/card prices {'count' if on else 'ignored'}" if n else f"no store {store_id!r}")
 
 # ---------------------------------------------------------------- matrix
+DEAL_FIELDS = ("store_id", "store_name", "product_name", "amount", "price_incl", "unit_price",
+               "valid_from", "valid_to", "club", "note", "slug")
+
 def matrix_rows():
+    """Store cells from direct sources, plus each row's best Kupi flyer deal. The cheapest
+    mark goes to whichever is lower per unit: a store cell or the flyer deal."""
     c = conn()
     cells = [dict(r) for r in c.execute("SELECT * FROM v_matrix ORDER BY category, row_name")]
+    deals = [dict(r) for r in c.execute("SELECT * FROM v_row_deal")]
     stores = [dict(r) for r in c.execute(
         "SELECT id, name FROM store WHERE id IN (SELECT DISTINCT store_id FROM v_matrix) "
         "ORDER BY id")]
     c.close()
     rows = {}
+    def row(key, name, category, unit):
+        return rows.setdefault(key, dict(key=key, name=name, category=category, unit=unit,
+                                         cells={}, deal=None))
     for cell in cells:
-        r = rows.setdefault(cell["row_key"], dict(key=cell["row_key"], name=cell["row_name"],
-                            category=cell["category"], unit=cell["unit"], cells={}))
+        r = row(cell["row_key"], cell["row_name"], cell["category"], cell["unit"])
         r["cells"][cell["store_id"]] = {k: cell[k] for k in (
             "offering_id", "offering_name", "source", "price_incl", "unit_qty", "unit_price",
             "is_promo", "promo_until", "club", "note", "ts", "url")} | {"is_cheapest": bool(cell["is_cheapest"])}
-    return stores, list(rows.values())
+    for d in deals:
+        r = row(d["row_key"], d["row_name"], d["category"], d["row_unit"])
+        r["deal"] = {k: d[k] for k in DEAL_FIELDS} | {
+            "url": f"{Kupi.BASE}/sleva/{d['slug']}", "is_cheapest": False}
+        best = min([x["unit_price"] for x in r["cells"].values()] or [float("inf")])
+        if d["unit_price"] <= best:
+            r["deal"]["is_cheapest"] = True
+            if d["unit_price"] < best:
+                for x in r["cells"].values(): x["is_cheapest"] = False
+    return stores, sorted(rows.values(), key=lambda r: (r["category"] or "", r["name"]))
 
 def matrix():
     stores, rows = matrix_rows()
     ids = [s["id"] for s in stores]
-    print("\n%-34s %-6s" % ("ROW", "PER") + "".join(f"{s[:8]:>9}" for s in ids))
-    print("-" * (41 + 9 * len(ids)))
+    print("\n%-34s %-6s %-22s" % ("ROW", "PER", "FLYER (kupi.cz)") + "".join(f"{s[:8]:>9}" for s in ids))
+    print("-" * (64 + 9 * len(ids)))
     for r in rows:
-        line = "%-34s %-6s" % (r["name"][:34], r["unit"])
+        d = r["deal"]
+        flyer = f"{d['unit_price']:.2f}{'*' if d['is_cheapest'] else ' '} {d['store_id'][:12]}" if d else "·"
+        line = "%-34s %-6s %-22s" % (r["name"][:34], r["unit"], flyer)
         for s in ids:
             cell = r["cells"].get(s)
             if not cell: line += f"{'·':>9}"; continue
             mark = "*" if cell["is_cheapest"] else " "
             line += f"{cell['unit_price']:8.2f}{mark}"
         print(line)
-    print("\n* = cheapest per unit in the row. Prices incl. VAT, latest capture per offering.\n")
+    print("\n* = cheapest per unit in the row. Store prices from the stores; FLYER = best current"
+          "\n    flyer deal from kupi.cz. Prices incl. VAT.\n")
 
 def export():
     stores, rows = matrix_rows()
@@ -577,12 +809,21 @@ def products_status():
                                                    promo_until, club
                                             FROM v_offer WHERE product_id IS NOT NULL""")]
     stores = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM store")}
+    deals = [dict(r) for r in c.execute("""SELECT product_id, slug, store_id, store_name, amount,
+                                                  price_incl, valid_from, valid_to AS promo_until,
+                                                  club, note FROM v_deal
+                                           WHERE product_id IS NOT NULL ORDER BY price_incl""")]
     c.close()
     for p in prods:
         p["query"] = default_query(p["name"])
         p["matches"] = []
         for w in (w for w in watches if w["product_id"] == p["id"]):
             s = source(w["source"])
+            if s.aggregator:
+                p["matches"].append(dict(source=w["source"], ref=w["ref"], name=w["name"] or w["ref"],
+                    packs=w["packs"], offers=[d for d in deals
+                                              if d["product_id"] == p["id"] and d["slug"] == w["ref"]]))
+                continue
             p["matches"].append(dict(source=w["source"], ref=w["ref"], name=w["name"] or w["ref"],
                 offers=[dict(o, store_name=stores.get(o["store_id"], o["store_id"]))
                         for o in offers if o["product_id"] == p["id"] and o["source"] == w["source"]
@@ -596,7 +837,20 @@ def serve(port):
     from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
     from urllib.parse import urlparse, parse_qs
     import functools, traceback
+    import threading, io, contextlib
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    crawl_state = {"thread": None, "log": io.StringIO()}
+
+    def start_crawl():
+        if crawl_state["thread"] and crawl_state["thread"].is_alive(): return False
+        crawl_state["log"] = log = io.StringIO()
+        def work():
+            with contextlib.redirect_stdout(log):
+                try: crawl()
+                except Exception as e: print(f"crawl failed: {e}")
+        crawl_state["thread"] = threading.Thread(target=work, daemon=True)
+        crawl_state["thread"].start()
+        return True
 
     class Handler(SimpleHTTPRequestHandler):
         def _json(self, obj, code=200):
@@ -629,6 +883,12 @@ def serve(port):
                                            stores=stores, rows=rows))
                 if u.path == "/api/products":
                     return self._json(dict(products=products_status(), sources=list(SOURCES)))
+                if u.path == "/api/crawl":
+                    t = crawl_state["thread"]
+                    return self._json(dict(running=bool(t and t.is_alive()),
+                                           log=crawl_state["log"].getvalue()[-2000:]))
+                if u.path == "/api/lookup":
+                    return self._json(dict(results=lookup(q["q"])))
                 if u.path == "/api/search":
                     return self._json(dict(candidates=source(q["source"]).search(q["q"])))
                 self._json({"error": "not found"}, 404)
@@ -644,15 +904,28 @@ def serve(port):
                 u = urlparse(self.path).path
                 if u == "/api/link":
                     offers = link(a["source"], a["ref"], a.get("ean"), a.get("need"),
-                                  a.get("qty"), a.get("name"), a.get("packs"))
+                                  a.get("qty"), a.get("name"), a.get("packs"), a.get("product_id"))
                     return self._json(dict(ok=True, offers=len(offers)))
                 if u == "/api/unlink":
                     return self._json(dict(ok=True, removed=unlink(a["source"], a["ref"],
-                                                                    a.get("ean"), a.get("need"))))
+                                           a.get("ean"), a.get("need"), a.get("product_id"))))
+                if u == "/api/product":
+                    pid = product_add(**{k: a.get(k) for k in PRODUCT_FIELDS})
+                    return self._json(dict(ok=True, id=pid))
+                if u == "/api/product/update":
+                    product_update(a["id"], **{k: a[k] for k in PRODUCT_FIELDS if k in a})
+                    return self._json(dict(ok=True))
+                if u == "/api/product/delete":
+                    product_delete(a["id"])
+                    return self._json(dict(ok=True))
+                if u == "/api/crawl":
+                    return self._json(dict(ok=True, started=start_crawl()))
                 if u == "/api/fetch":
                     fetch(a.get("sources")); export()
                     return self._json(dict(ok=True))
                 self._json({"error": "not found"}, 404)
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
             except Exception as e:
                 traceback.print_exc(); self._json({"error": str(e)}, 500)
 
@@ -677,6 +950,8 @@ def main():
     m.add_argument("--query", help="search text (default: product/need name)")
     m.add_argument("--qty", type=float, help="units per pack, if it can't be read from the name")
     m.add_argument("--pick", type=int, help="candidate number (skip the prompt)")
+    cr = sub.add_parser("crawl", help="weekly Kupi flyer crawl (~10-20 min)")
+    cr.add_argument("--chains", help="comma list of kupi chain slugs (default: Kupi.CRAWL_CHAINS)")
     f = sub.add_parser("fetch"); f.add_argument("--source", help="comma list, e.g. rohlik,kupi")
     st = sub.add_parser("store"); stsub = st.add_subparsers(dest="scmd", required=True)
     sm = stsub.add_parser("member", help="do you hold this chain's loyalty card?")
@@ -695,6 +970,7 @@ def main():
     elif a.cmd == "match":
         if bool(a.ean) == bool(a.need): ap.error("match needs an EAN or --need, not both")
         match(a.source, a.ean, a.need, a.query, a.pick, a.qty)
+    elif a.cmd == "crawl": crawl(a.chains.split(",") if a.chains else None)
     elif a.cmd == "fetch": fetch(a.source.split(",") if a.source else None)
     elif a.cmd == "matrix": matrix()
     elif a.cmd == "export": export()

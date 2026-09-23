@@ -15,23 +15,56 @@
   <div class="meta" id="meta"></div>
   <div class="toolbar">
     <label><input type="checkbox" id="onlyOpen" checked> unmatched first</label>
-    <button class="btn ghost" id="refresh">Refresh all prices</button>
+    <button class="btn ghost" id="refresh">Refresh store prices</button>
+    <button class="btn ghost" id="crawl" title="every current flyer offer of the tracked chains; 10–20 min">Crawl Kupi flyers</button>
     <span class="status" id="gstatus"></span>
   </div>
+  <details class="addbox" id="addbox">
+    <summary>＋ Add an item</summary>
+    <div class="addform">
+      <div class="searchrow">
+        <input type="search" id="lookupQ" placeholder="barcode or name, e.g. 8593803421216 or nutella 600" aria-label="look up">
+        <button class="btn ghost" id="lookupGo">Look up at Makro</button>
+      </div>
+      <ul class="cands" id="lookupRes"></ul>
+      <div id="addFields"></div>
+      <div class="searchrow"><button class="btn" id="addGo">Add &amp; match</button>
+        <span class="status" id="addStatus"></span></div>
+    </div>
+  </details>
+  <datalist id="cats"></datalist>
   <div id="list"></div>
-  <p class="note">Kupi collects chain flyers, so picking a Kupi product brings in every chain's current
-    offer for it and keeps checking weekly, even when nobody has it on offer. Rohlík is one store,
+  <p class="note">Kupi collects chain flyers: picking a Kupi product links that product's flyer deals
+    (from every chain, found by the weekly crawl) to your item. They show in the matrix's flyer column,
+    separate from store prices. Rohlík is one store,
     one product id. Pick the same item (brand + pack); a different pack size is fine, since prices
     are compared per unit.</p>
 </div>
 <script>
+// Fields of an item; used by the add box and by each item's edit section.
+function itemForm(p={}, prefix="add"){
+  const units = ["kg","l","roll","egg","piece","pack"];
+  return `<div class="fields">
+    <label class="wide">name<input data-f="name" value="${esc(p.name)}" placeholder="Nutella 600g"></label>
+    <label>barcode (EAN)<input data-f="ean" value="${esc(p.ean)}" inputmode="numeric" placeholder="optional"></label>
+    <label>category<input data-f="category" list="cats" value="${esc(p.category)}" placeholder="dairy"></label>
+    <label>VAT<select data-f="vat_pct">${[12,21,0].map(v=>`<option value="${v}" ${(p.vat_pct??12)==v?'selected':''}>${v} %</option>`).join("")}</select></label>
+    <label>price per<select data-f="unit"><option value="">auto from name</option>${units.map(u=>`<option ${p.unit===u?'selected':''}>${u}</option>`).join("")}</select></label>
+    <label>units in pack<input data-f="unit_qty" type="number" step="any" min="0" value="${p.unit_qty??''}" placeholder="auto"></label>
+  </div>`;
+}
+function readForm(el){
+  const o = {};
+  el.querySelectorAll("[data-f]").forEach(x=>{ if(x.value!=="") o[x.dataset.f] = x.value; });
+  return o;
+}
 const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
-const SRC = {kupi:"Kupi", rohlik:"Rohlík"};
+const SRC = {kupi:"Kupi flyers", rohlik:"Rohlík", makro:"Makro"};
 let PRODUCTS = [], SOURCES = [];
-const ui = {};   // per ean: {source, query, results, busy, msg}
+const ui = {};   // per product id: {source, query, results, busy, msg}
 
 async function api(path, body){
   const r = await fetch("api/"+path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
@@ -45,7 +78,9 @@ async function load(){
   try{
     const d = await api("products");
     PRODUCTS = d.products;
-    SOURCES = [...d.sources].sort((a,b)=>(b==="kupi")-(a==="kupi"));  // Kupi first: most chains
+    const order = ["makro", "rohlik", "kupi"];  // stores first, the flyer layer last
+    SOURCES = [...d.sources].sort((a,b)=>(order.indexOf(a)+99)%99-(order.indexOf(b)+99)%99);
+    fillCats();
     render();
   }catch(e){
     $("list").innerHTML = `<div class="loader">Couldn't reach the local server (${esc(e.message)}).<br>
@@ -62,7 +97,7 @@ function offerChip(o){
 }
 
 function render(){
-  const open = [...document.querySelectorAll("details.prod[open]")].map(d=>d.dataset.ean);
+  const open = [...document.querySelectorAll("details.prod[open]")].map(d=>d.dataset.id);
   const isMatched = p => p.matches.length>0;
   let list = [...PRODUCTS];
   if($("onlyOpen").checked) list.sort((a,b)=>isMatched(a)-isMatched(b));
@@ -73,29 +108,31 @@ function render(){
       const m = p.matches.filter(x=>x.source===s);
       return `<span class="badge ${m.length?'on':''}">${SRC[s]||s}${m.length?' ✓':''}</span>`;
     }).join("");
-    return `<details class="prod" data-ean="${esc(p.ean)}" ${open.includes(p.ean)?'open':''}>
+    return `<details class="prod" data-id="${p.id}" ${open.includes(String(p.id))?'open':''}>
       <summary><span class="nm">${esc(p.name)}</span>
         <span class="badges">${badges}</span>
         <span class="sub">${esc(p.category)} · per ${esc(p.unit)} (${+p.unit_qty} in the receipt pack)${p.need_name?' · need: '+esc(p.need_name):''}</span>
       </summary>
-      <div class="panel" id="panel-${esc(p.ean)}"></div>
+      <div class="panel" id="panel-${p.id}"></div>
     </details>`;
   }).join("");
   document.querySelectorAll("details.prod").forEach(d=>{
-    d.addEventListener("toggle", ()=>{ if(d.open) openPanel(d.dataset.ean); });
-    if(d.open) renderPanel(d.dataset.ean);
+    d.addEventListener("toggle", ()=>{ if(d.open) openPanel(d.dataset.id); });
+    if(d.open) renderPanel(d.dataset.id);
   });
 }
 
-function state(ean){
-  const p = PRODUCTS.find(x=>x.ean===ean);
-  return ui[ean] ??= {source: SOURCES[0], query: p.query, results: null, busy: false, msg: ""};
+function state(pid){
+  const p = PRODUCTS.find(x=>x.id==pid);
+  const byEan = p.ean && SOURCES.includes("makro");
+  return ui[pid] ??= {source: byEan ? "makro" : SOURCES[0], query: byEan ? p.ean : p.query,
+                      results: null, busy: false, msg: ""};
 }
 
-function openPanel(ean){
-  const st = state(ean);
-  renderPanel(ean);
-  if(!st.results && !st.busy) search(ean);
+function openPanel(pid){
+  const st = state(pid);
+  renderPanel(pid);
+  if(!st.results && !st.busy) search(pid);
 }
 
 // A Kupi product can lump pack sizes (diapers 68/52/44 ks). Offer a choice when it does.
@@ -111,8 +148,8 @@ function packChooser(c, i){
     `<label><input type="checkbox" data-pack="${i}" value="${esc(k)}" checked> ${esc(label)}</label>`).join("")}</span>`;
 }
 
-function renderPanel(ean){
-  const p = PRODUCTS.find(x=>x.ean===ean), st = state(ean), el = $("panel-"+ean);
+function renderPanel(pid){
+  const p = PRODUCTS.find(x=>x.id==pid), st = state(pid), el = $("panel-"+pid);
   if(!el) return;
   const matched = p.matches.map(m=>`<li><span class="src">${esc(SRC[m.source]||m.source)}</span>
       <span>${esc(m.name)}</span>
@@ -134,6 +171,9 @@ function renderPanel(ean){
       </li>`).join("")}</ul>`;
   el.innerHTML = `
     ${matched||manual ? `<ul class="matched">${matched}${manual}</ul>` : ""}
+    <details class="edit"><summary>Edit item</summary>${itemForm(p)}
+      <div class="searchrow"><button class="btn ghost" data-save>Save</button>
+        <button class="btn ghost danger" data-del>Delete item</button></div></details>
     <div class="searchrow">
       <span class="seg">${SOURCES.map(s=>`<button data-src="${s}" aria-pressed="${s===st.source}">${SRC[s]||s}</button>`).join("")}</span>
       <input type="search" value="${esc(st.query)}" aria-label="search text">
@@ -143,58 +183,69 @@ function renderPanel(ean){
     ${results}`;
   const input = el.querySelector("input");
   input.oninput = () => { st.query = input.value; };
-  input.onkeydown = e => { if(e.key==="Enter") search(ean); };
-  el.querySelector("[data-go]").onclick = () => search(ean);
+  input.onkeydown = e => { if(e.key==="Enter") search(pid); };
+  el.querySelector("[data-go]").onclick = () => search(pid);
   el.querySelectorAll("[data-src]").forEach(b=>b.onclick=()=>{
-    st.source = b.dataset.src; st.results = null; search(ean); });
+    st.source = b.dataset.src; st.results = null;
+    if(st.source!=="makro" && /^\d{8,14}$/.test(st.query)) st.query = p.query;  // only Makro takes barcodes
+    search(pid); });
   el.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{
     const i = +b.dataset.pick, boxes = [...el.querySelectorAll(`[data-pack="${i}"]`)];
     const chosen = boxes.filter(x=>x.checked).map(x=>x.value);
-    if(boxes.length && !chosen.length){ state(ean).msg = "Tick at least one size."; return renderPanel(ean); }
-    pick(ean, st.results[i], boxes.length && chosen.length < boxes.length ? chosen : null);
+    if(boxes.length && !chosen.length){ state(pid).msg = "Tick at least one size."; return renderPanel(pid); }
+    pick(pid, st.results[i], boxes.length && chosen.length < boxes.length ? chosen : null);
   });
+  el.querySelector("[data-save]").onclick = () => run(pid, "Saving…", async st=>{
+    await api("product/update", {id: +pid, ...readForm(el.querySelector(".edit"))});
+    st.msg = "Saved."; await reloadProducts(true);
+  });
+  el.querySelector("[data-del]").onclick = async () => {
+    if(!confirm(`Delete "${p.name}" and everything matched to it?`)) return;
+    await api("product/delete", {id: +pid}); await reloadProducts(true);
+  };
   el.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
-    const [source, ref] = b.dataset.unlink.split("|"); unpick(ean, source, ref); });
+    const [source, ref] = b.dataset.unlink.split("|"); unpick(pid, source, ref); });
 }
 
-async function run(ean, msg, fn){
-  const st = state(ean);
-  st.busy = true; st.err = false; st.msg = msg; renderPanel(ean);
+async function run(pid, msg, fn){
+  const st = state(pid);
+  st.busy = true; st.err = false; st.msg = msg; renderPanel(pid);
   try{ await fn(st); }
   catch(e){ st.err = true; st.msg = e.message; }
-  finally{ st.busy = false; renderPanel(ean); }
+  finally{ st.busy = false; renderPanel(pid); }
 }
 
-function search(ean){
-  return run(ean, "Searching…", async st=>{
+function search(pid){
+  return run(pid, "Searching…", async st=>{
     const d = await api(`search?source=${encodeURIComponent(st.source)}&q=${encodeURIComponent(st.query)}`);
     st.results = d.candidates; st.msg = "";
   });
 }
 
-function pick(ean, c, packs){
-  return run(ean, "Saving and fetching current prices…", async st=>{
-    const d = await api("link", {source: st.source, ref: c.ref, ean, name: c.name, packs});
+function pick(pid, c, packs){
+  return run(pid, "Saving and fetching current prices…", async st=>{
+    const d = await api("link", {source: st.source, ref: c.ref, product_id: +pid, name: c.name, packs});
     st.msg = `Matched ${c.name}: ${d.offers} current offer(s).`;
     await reloadProducts();
   });
 }
 
-function unpick(ean, source, ref){
-  return run(ean, "Removing…", async st=>{
-    await api("unlink", {source, ref, ean});
+function unpick(pid, source, ref){
+  return run(pid, "Removing…", async st=>{
+    await api("unlink", {source, ref, product_id: +pid});
     st.msg = "Removed.";
     await reloadProducts();
   });
 }
 
-async function reloadProducts(){
+async function reloadProducts(full=false){
   const d = await api("products");
   PRODUCTS = d.products;
+  if(full){ fillCats(); return render(); }
   const n = PRODUCTS.filter(p=>p.matches.length).length;
   $("meta").textContent = `${n} of ${PRODUCTS.length} items matched to at least one source`;
   document.querySelectorAll("details.prod").forEach(el=>{
-    const p = PRODUCTS.find(x=>x.ean===el.dataset.ean);
+    const p = PRODUCTS.find(x=>x.id==el.dataset.id);
     el.querySelector(".badges").innerHTML = SOURCES.map(s=>{
       const on = p.matches.some(x=>x.source===s);
       return `<span class="badge ${on?'on':''}">${SRC[s]||s}${on?' ✓':''}</span>`;
@@ -203,11 +254,60 @@ async function reloadProducts(){
 }
 
 $("onlyOpen").onchange = render;
+
+// ---- add an item
+function fillCats(){
+  $("cats").innerHTML = [...new Set(PRODUCTS.map(p=>p.category).filter(Boolean))].sort()
+    .map(c=>`<option value="${esc(c)}">`).join("");
+}
+$("addFields").innerHTML = itemForm();
+async function lookupGo(){
+  const q = $("lookupQ").value.trim(); if(!q) return;
+  $("lookupRes").innerHTML = `<li class="status">Looking up…</li>`;
+  try{
+    const d = await api("lookup?q="+encodeURIComponent(q));
+    $("lookupRes").innerHTML = d.results.length ? d.results.map((r,i)=>`<li class="cand">
+        <span class="cn">${esc(r.name)}</span><span class="offers"><span class="off none">EAN ${esc(r.ean)}</span></span>
+        <button class="btn ghost" data-use="${i}">Use</button></li>`).join("")
+      : `<li class="status">Makro doesn't know it. Fill the fields in yourself.</li>`;
+    $("lookupRes").querySelectorAll("[data-use]").forEach(b=>b.onclick=()=>{
+      const r = d.results[+b.dataset.use], f = $("addFields");
+      f.querySelector('[data-f="name"]').value = r.name.replace(/\s+chlaz\.|\s+mraž\./g,"");
+      f.querySelector('[data-f="ean"]').value = r.ean;
+      $("lookupRes").innerHTML = "";
+    });
+  }catch(e){ $("lookupRes").innerHTML = `<li class="status err">${esc(e.message)}</li>`; }
+}
+$("lookupGo").onclick = lookupGo;
+$("lookupQ").onkeydown = e => { if(e.key==="Enter") lookupGo(); };
+$("addGo").onclick = async ()=>{
+  const body = readForm($("addFields"));
+  $("addStatus").textContent = "Adding…"; $("addStatus").classList.remove("err");
+  try{
+    const d = await api("product", body);
+    $("addStatus").textContent = `Added "${body.name}". Now match it below.`;
+    $("addFields").innerHTML = itemForm(); $("lookupQ").value = "";
+    await reloadProducts(true);
+    const el = document.querySelector(`details.prod[data-id="${d.id}"]`);
+    if(el){ el.open = true; el.scrollIntoView({behavior:"smooth", block:"start"}); }
+  }catch(e){ $("addStatus").textContent = e.message; $("addStatus").classList.add("err"); }
+};
+async function pollCrawl(){
+  const d = await api("crawl").catch(()=>null);
+  if(!d) return;
+  const last = d.log.trim().split("\n").pop() || "";
+  $("crawl").disabled = d.running;
+  $("gstatus").textContent = d.running ? `Crawling Kupi… ${last}` : (last.startsWith("crawl") ? last : $("gstatus").textContent);
+  if(d.running) setTimeout(pollCrawl, 4000);
+  else if(last.startsWith("crawl done")) reloadProducts();
+}
+$("crawl").onclick = async ()=>{ await api("crawl", {}); pollCrawl(); };
+pollCrawl();
 $("refresh").onclick = async ()=>{
   const b = $("refresh"); b.disabled = true;
-  $("gstatus").textContent = "Fetching every matched item (Kupi pages are 1.5 s apart)…";
-  try{ await api("fetch", {}); $("gstatus").textContent = "Prices refreshed."; await reloadProducts();
-       document.querySelectorAll("details.prod[open]").forEach(d=>renderPanel(d.dataset.ean)); }
+  $("gstatus").textContent = "Fetching store prices of every matched item…";
+  try{ await api("fetch", {}); $("gstatus").textContent = "Store prices refreshed."; await reloadProducts();
+       document.querySelectorAll("details.prod[open]").forEach(d=>renderPanel(d.dataset.id)); }
   catch(e){ $("gstatus").textContent = e.message; }
   finally{ b.disabled = false; }
 };

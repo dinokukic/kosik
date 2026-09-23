@@ -30,7 +30,8 @@ function apply(d){
   document.getElementById("note").textContent =
     "Cells show price per unit (per kg, l, roll, egg, piece or pack), VAT included, from each store's "
     + "latest capture; the pack price is underneath. Green = cheapest in the row. akce = promo, often time-limited; requires card = loyalty-card price "
-    + "(hover for which card). Flyer prices via Kupi are filed under the chain.";
+    + "(hover for which card). Store columns come from the stores directly; the flyer column is the best current "
+    + "flyer deal across all chains, found by the weekly kupi.cz crawl. Flyer prices via Kupi are filed under the chain.";
 }
 async function load(){
   try{
@@ -56,12 +57,26 @@ function buildFilters(){
   document.querySelectorAll("#filters button").forEach(b=>b.onclick=()=>{
     CAT=b.dataset.c; buildFilters(); render();});
 }
+const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
+// Best current flyer deal for the row (Kupi aggregates chain flyers; not a store column).
+function flyerCell(r){
+  const d = r.deal;
+  if(!d) return `<td class="flyer empty">·</td>`;
+  const card = d.club ? `<span class="pill club" title="${esc(d.club)}">requires card</span>` : "";
+  const perPack = r.unit!=="pack" ? ` · ${CZK(d.price_incl)}${d.amount?'/'+esc(d.amount):''}` : "";
+  return `<td class="cell flyer ${d.is_cheapest?'win':''}" title="${esc([d.product_name, d.club, d.note].filter(Boolean).join(' · '))}">`
+    + `<a href="${esc(d.url)}" target="_blank" rel="noopener"><b>${CZK(d.unit_price)}</b>${card}`
+    + `<span class="tot">${esc(d.store_name||d.store_id)}${perPack}${d.valid_to?' · do '+dm(d.valid_to):''}</span></a></td>`;
+}
+
 function render(){
   const rows = DATA.rows.filter(r=>CAT==="all"||(r.category||"other")===CAT);
   // only columns that have at least one price in view, busiest store first
   const count = s => rows.filter(r=>r.cells[s.id]).length;
+  if(!rows.length){ document.getElementById("list").innerHTML = '<div class="loader">Nothing matched yet — go to Match.</div>'; return; }
   const stores = DATA.stores.filter(s=>count(s)>0).sort((a,b)=>count(b)-count(a));
-  const head = `<tr><th class="row">item</th>${stores.map(s=>`<th>${esc(s.name)}</th>`).join("")}</tr>`;
+  const head = `<tr><th class="row">item</th><th class="flyer">flyer deal · kupi.cz</th>`
+    + `${stores.map(s=>`<th>${esc(s.name)}</th>`).join("")}</tr>`;
   const body = rows.map(r=>{
     const tds = stores.map(s=>{
       const c=r.cells[s.id];
@@ -73,7 +88,8 @@ function render(){
       return `<td class="cell ${c.is_cheapest?'win':''}" title="${esc([c.offering_name, c.club, c.note, 'via '+c.source+' · '+c.ts].filter(Boolean).join(' · '))}">`
         + (c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${inner}</a>` : inner) + `</td>`;
     }).join("");
-    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">per ${esc(r.unit)}</div></td>${tds}</tr>`;
+    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">per ${esc(r.unit)}</div></td>`
+      + `${flyerCell(r)}${tds}</tr>`;
   }).join("");
   document.getElementById("list").innerHTML =
     `<div class="scroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;

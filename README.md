@@ -33,8 +33,9 @@ python pricetrack.py matrix                    # rows x stores in the terminal
 
 # match once per item (you pick the right pack), then fetch by id forever
 python pricetrack.py match rohlik 8593803421216 --query "jihočeské máslo 250"
-python pricetrack.py match kupi 8593803421216  # flyer offers at every chain (Kupi = aggregator)
-python pricetrack.py fetch                     # all sources: rohlik + kupi
+python pricetrack.py match kupi 8593803421216  # link an item to its Kupi product (flyer deals)
+python pricetrack.py crawl                     # weekly: every current flyer offer (~10-20 min)
+python pricetrack.py fetch                     # store prices of everything matched
 python pricetrack.py store member kaufland off # don't count Kaufland Card prices
 
 # needs: group different brands/packs into one comparable row
@@ -53,7 +54,8 @@ python bunny/rohlik_probe.py "pampers premium care 1"
 
 ## Status
 - Rohlík adapter: **verified & working**.
-- Kupi (flyer aggregator): **verified & working** — offers filed under the real chain.
+- Kupi (flyer aggregator): **verified & working** — a separate flyer-deals layer
+  (weekly crawl), shown as its own column; store prices come from the stores directly.
 - Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.
 - Schema: three layers (need / product / offering + price history) built.
 - Dashboard: matrix built; basket-by-store view next.

@@ -1223,6 +1223,12 @@ def ean_score(product, cand_name, cand_amount):
     score = len(want & got) / len(want)
     brand = _tokens(re.sub(r"^(rohlik\.cz|bio)\s+", "", product["name"], flags=re.I).split()[0])
     if brand and not brand & got: score -= 0.4
+    pct = lambda n: set(re.findall(r"(\d+(?:[.,]\d+)?)\s*%", n.replace(",", ".")))
+    if pct(product["name"]) and pct(cand_name) and not pct(product["name"]) & pct(cand_name):
+        score -= 0.4                                  # 0 % vs 5 % yogurt: a different product
+    own = re.match(r"(tesco|globus|váš výběr|vas vyber|k-classic|clever|billa)\b", cand_name.strip(), re.I)
+    if own and not re.match(re.escape(own[1]), product["name"].strip(), re.I):
+        score -= 0.4                                  # a chain's own brand only fits that chain
     unit, qty = infer_unit(f"{cand_name} {cand_amount}", None)
     same = unit == product["unit"] or {unit, product["unit"]} == {"kg", "l"}  # 450 g kefír = 450 ml
     if same and product["unit_qty"]:

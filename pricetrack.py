@@ -121,9 +121,20 @@ class BunnyConn:
         if "constraint" in msg.lower(): raise sqlite3.IntegrityError(msg)
         raise sqlite3.OperationalError(msg)
 
-    def _send(self, requests_):
-        r = self._session().post(self.url, json={"baton": None, "requests": [*requests_, {"type": "close"}]},
-                                 timeout=60)
+    def _send(self, requests_, attempts=3):
+        """One pipeline request. Transient failures (5xx, 429, dropped connection) are retried
+        with back-off; each call is a self-contained pipeline, so a retry can't half-apply."""
+        import requests as rq
+        body = {"baton": None, "requests": [*requests_, {"type": "close"}]}
+        for i in range(attempts):
+            try:
+                r = self._session().post(self.url, json=body, timeout=60)
+            except (rq.ConnectionError, rq.Timeout) as e:
+                if i == attempts - 1: raise sqlite3.OperationalError(f"Bunny DB unreachable: {e}")
+                time.sleep(2 ** i); continue
+            if (r.status_code >= 500 or r.status_code == 429) and i < attempts - 1:
+                time.sleep(2 ** i); continue
+            break
         if r.status_code != 200: raise sqlite3.OperationalError(f"Bunny DB HTTP {r.status_code}: {r.text[:200]}")
         res = r.json()["results"][0]
         if res.get("type") == "error": self._raise(res.get("error"))

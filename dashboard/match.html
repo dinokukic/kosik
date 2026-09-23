@@ -62,7 +62,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
-const SRC = {kupi:"Kupi flyers", rohlik:"Rohlík", makro:"Makro"};
+const SRC = {kupi:"Kupi flyers", rohlik:"Rohlík", makro:"Makro", globus:"Globus", kosik:"Košík.cz", dm:"dm"};
 let PRODUCTS = [], SOURCES = [];
 const ui = {};   // per product id: {source, query, results, busy, msg}
 
@@ -78,7 +78,7 @@ async function load(){
   try{
     const d = await api("products");
     PRODUCTS = d.products;
-    const order = ["makro", "rohlik", "kupi"];  // stores first, the flyer layer last
+    const order = ["globus", "kosik", "dm", "makro", "rohlik", "kupi"];  // stores first, flyers last
     SOURCES = [...d.sources].sort((a,b)=>(order.indexOf(a)+99)%99-(order.indexOf(b)+99)%99);
     fillCats();
     render();
@@ -130,9 +130,31 @@ function state(pid){
 }
 
 function openPanel(pid){
-  const st = state(pid);
+  const st = state(pid), p = PRODUCTS.find(x=>x.id==pid);
   renderPanel(pid);
-  if(!st.results && !st.busy) search(pid);
+  if(p.ean && st.suggest===undefined) findByBarcode(pid);
+  else if(!st.results && !st.busy) search(pid);
+}
+
+// Exact barcode hits across the EAN-capable stores, for one-click linking.
+async function findByBarcode(pid){
+  const st = state(pid);
+  st.suggest = null; renderPanel(pid);
+  try{ st.suggest = (await api("suggest?product_id="+pid)).results; }
+  catch(e){ st.suggest = []; st.msg = e.message; st.err = true; }
+  renderPanel(pid);
+}
+function suggestBlock(pid){
+  const st = state(pid);
+  if(st.suggest===undefined) return "";
+  if(st.suggest===null) return `<p class="status">Looking the barcode up at Globus, Košík.cz, dm and Makro…</p>`;
+  if(!st.suggest.length) return `<p class="status">No new barcode matches. Search by name below.</p>`;
+  return `<div class="suggest"><div class="sh">Found by barcode
+      <button class="btn" data-linkall ${st.busy?'disabled':''}>Link all ${st.suggest.length}</button></div>
+    <ul class="cands">${st.suggest.map((c,i)=>`<li class="cand">
+      <span class="cn"><span class="src">${esc(SRC[c.source]||c.source)}</span> ${esc(c.name)}</span>
+      <span class="offers">${c.offers.map(offerChip).join("")}${c.source==="kosik"?'<span class="off none">check the pack: Košík doesn\'t confirm barcodes</span>':''}</span>
+      <button class="btn ghost" data-sug="${i}" ${st.busy?'disabled':''}>Link</button></li>`).join("")}</ul></div>`;
 }
 
 // A Kupi product can lump pack sizes (diapers 68/52/44 ks). Offer a choice when it does.
@@ -174,6 +196,7 @@ function renderPanel(pid){
     <details class="edit"><summary>Edit item</summary>${itemForm(p)}
       <div class="searchrow"><button class="btn ghost" data-save>Save</button>
         <button class="btn ghost danger" data-del>Delete item</button></div></details>
+    ${suggestBlock(pid)}
     <div class="searchrow">
       <span class="seg">${SOURCES.map(s=>`<button data-src="${s}" aria-pressed="${s===st.source}">${SRC[s]||s}</button>`).join("")}</span>
       <input type="search" value="${esc(st.query)}" aria-label="search text">
@@ -203,6 +226,8 @@ function renderPanel(pid){
     if(!confirm(`Delete "${p.name}" and everything matched to it?`)) return;
     await api("product/delete", {id: +pid}); await reloadProducts(true);
   };
+  el.querySelectorAll("[data-sug]").forEach(b=>b.onclick=()=>linkSuggested(pid, [st.suggest[+b.dataset.sug]]));
+  el.querySelector("[data-linkall]")?.addEventListener("click", ()=>linkSuggested(pid, [...st.suggest]));
   el.querySelectorAll("[data-unlink]").forEach(b=>b.onclick=()=>{
     const [source, ref] = b.dataset.unlink.split("|"); unpick(pid, source, ref); });
 }
@@ -226,6 +251,17 @@ function pick(pid, c, packs){
   return run(pid, "Saving and fetching current prices…", async st=>{
     const d = await api("link", {source: st.source, ref: c.ref, product_id: +pid, name: c.name, packs});
     st.msg = `Matched ${c.name}: ${d.offers} current offer(s).`;
+    await reloadProducts();
+  });
+}
+
+function linkSuggested(pid, hits){
+  return run(pid, `Linking ${hits.length}…`, async st=>{
+    for(const c of hits){
+      await api("link", {source: c.source, ref: c.ref, product_id: +pid, name: c.name});
+      st.suggest = st.suggest.filter(x=>x!==c);
+    }
+    st.msg = `Linked ${hits.map(c=>SRC[c.source]||c.source).join(", ")}.`;
     await reloadProducts();
   });
 }

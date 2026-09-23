@@ -54,6 +54,8 @@ python bunny/rohlik_probe.py "pampers premium care 1"
 
 ## Status
 - Rohlík adapter: **verified & working**.
+- Direct stores: **Globus, Košík.cz, dm, Makro, Rohlík** (verified). Tesco, Billa,
+  Rossmann, Teta next — endpoints in `docs/store-apis.md`.
 - Kupi (flyer aggregator): **verified & working** — a separate flyer-deals layer
   (weekly crawl), shown as its own column; store prices come from the stores directly.
 - Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.

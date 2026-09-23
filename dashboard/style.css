@@ -107,3 +107,7 @@
   details.edit{margin:0 0 .8rem;font-size:.84rem}
   details.edit>summary{cursor:pointer;color:var(--muted)}
   .btn.danger{color:#b04a3a;border-color:#b04a3a}
+  .suggest{border:1px solid var(--win);border-radius:.6rem;padding:.6rem .7rem .3rem;margin-bottom:1rem;background:var(--winbg)}
+  .suggest .sh{display:flex;justify-content:space-between;align-items:center;font-size:.85rem;margin-bottom:.5rem}
+  .suggest .cand{background:var(--paper)}
+  .cand .src{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem;color:var(--muted);margin-right:.3rem}

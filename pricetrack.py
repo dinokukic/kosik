@@ -352,6 +352,7 @@ class Kupi:
     def ref_of(self, store_ref): return store_ref.split(":")[1]
 
 class Makro:
+    ean_search = True  # search accepts a barcode and returns that exact item
     """VERIFIED live 2026-09-23 (logged-in inspection + anonymous calls). NO login needed:
     the anonymous search returns the NET (bez DPH) price per single pack, which x (1+VAT)
     equals the receipt exactly (butter 52.30 -> 58.58, Pampers 369 -> 446.49).
@@ -432,11 +433,169 @@ class Makro:
 
     def ref_of(self, store_ref): return store_ref
 
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+
+def store_offer(store_id, store_name, ref, name, amount, url, price, regular=None,
+                until=None, note=None, ean=None):
+    """Offer dict for a direct store source. Promo = paying less than the regular price."""
+    promo = regular is not None and price is not None and price < regular - 0.001
+    return dict(store_id=store_id, store_name=store_name, store_ref=str(ref), name=name,
+                amount=amount or "", url=url, price_incl=float(price), is_promo=promo,
+                valid_from=None, promo_until=until if promo else None, club=None,
+                note=note if promo else None, ref="", ean=str(ean) if ean else None)
+
+def is_ean(q): return bool(re.fullmatch(r"\d{8,14}", (q or "").strip()))
+
+class Globus:
+    ean_search = True  # search accepts a barcode and returns that exact item
+    """VERIFIED 2026-09-23. globusonline.cz Shopsys GraphQL, no login. Search by name or EAN
+    (fuzzy: an EAN query can return a neighbouring EAN, so exact-match it). Batch by catalogue
+    number. Promo = priority SPECIAL_PRICE with globusOriginalPrice. robots: crawl-delay 3."""
+    aggregator = False
+    URL = "https://globusonline.cz/graphql/"
+    FIELDS = ("uuid name catalogNumber ean sellUnitSizeText slug "
+              "price{priceWithVat globusOriginalPrice globusDiscountPercentage priority}")
+
+    def _q(self, query, variables):
+        import requests
+        r = requests.post(self.URL, json=dict(query=query, variables=variables), timeout=20,
+                          headers={"User-Agent": BROWSER_UA, "Content-Type": "application/json"})
+        r.raise_for_status()
+        d = r.json()
+        if d.get("errors"): raise RuntimeError(d["errors"][0].get("message"))
+        return d["data"]
+
+    def _offer(self, n):
+        p = n.get("price") or {}
+        orig = p.get("globusOriginalPrice")
+        disc = p.get("globusDiscountPercentage")
+        return store_offer("globus", "Globus", n["catalogNumber"], n["name"], n.get("sellUnitSizeText"),
+                           f"https://globusonline.cz/{n['slug'].lstrip('/')}" if n.get("slug") else
+                           "https://globusonline.cz", float(p["priceWithVat"]),
+                           float(orig) if orig else None, note=f"−{disc:.0f} %" if disc else None,
+                           ean=n.get("ean"))
+
+    def search(self, query, n=12):
+        d = self._q("query S($q:String!,$n:Int!){productsSearch(searchInput:{search:$q,isAutocomplete:false,"
+                    "userIdentifier:\"00000000-0000-4000-8000-000000000000\"},first:$n){edges{node{%s}}}}"
+                    % self.FIELDS, dict(q=query, n=n))
+        nodes = [e["node"] for e in d["productsSearch"]["edges"]]
+        if is_ean(query): nodes = [x for x in nodes if x.get("ean") == query.strip()]
+        return [dict(ref=o["store_ref"], name=o["name"], url=o["url"], offers=[o])
+                for o in map(self._offer, nodes)]
+
+    def fetch(self, refs):
+        out, refs = {}, list(refs)
+        for i in range(0, len(refs), 50):
+            if i: time.sleep(3)
+            d = self._q("query($c:[String!]!){productsByCatnums(catnums:$c){%s}}" % self.FIELDS,
+                        dict(c=refs[i:i + 50]))
+            for n in d["productsByCatnums"] or []:
+                out[n["catalogNumber"]] = [self._offer(n)]
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+class Kosik:
+    ean_search = True  # search accepts a barcode and returns that exact item
+    """VERIFIED 2026-09-23. kosik.cz front API, no login. Search by name or EAN (suggest/v2;
+    EAN isn't in the JSON). Price per product id. price < recommendedPrice = promo, end date
+    in actionLabel ('Akce platí do 29. 9.'). A single-item EAN can map to a multipack."""
+    aggregator = False
+    BASE = "https://www.kosik.cz"
+
+    def _get(self, path, params=None):
+        return http_get(self.BASE + path, params, {"User-Agent": BROWSER_UA, "Accept": "application/json"})
+
+    def _offer(self, it):
+        q = it.get("productQuantity") or {}
+        amount = f"{q['value']:g} {q['unit']}" if q.get("value") else ""
+        until = Kupi._dates(it.get("actionLabel") or "")[1]
+        return store_offer("kosik-cz", "Košík.cz", it["id"], it["name"], amount,
+                           self.BASE + (it.get("url") or f"/p{it['id']}"), it["price"],
+                           it.get("recommendedPrice"), until,
+                           f"−{it['percentageDiscount']} %" if it.get("percentageDiscount") else None)
+
+    def search(self, query, n=12):
+        items = (self._get("/api/front/suggest/v2", dict(query=query, limit=n)).get("products") or {}
+                 ).get("items") or []
+        return [dict(ref=o["store_ref"], name=o["name"], url=o["url"], offers=[o])
+                for o in map(self._offer, items) if o]
+
+    def fetch(self, refs):
+        out = {}
+        for i, ref in enumerate(refs):
+            if i: time.sleep(1.0)
+            try:
+                it = self._get(f"/api/front/product/{ref}")["product"]
+            except Exception as e:
+                print(f"  [kosik] {ref}: {e}"); continue
+            out[str(ref)] = [self._offer(it)]
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+class Dm:
+    ean_search = True  # search accepts a barcode and returns that exact item
+    """VERIFIED 2026-09-23. dm.cz, no login, one national price incl. VAT. Search by name or
+    EAN (product-search, rate-limited: ~5 quick calls -> 429 for ~20 s). Batch price by DAN
+    (dm's product id). Promo = price.previous (strike-through) — inferred, not yet seen."""
+    aggregator = False
+    SEARCH = "https://product-search.services.dmtech.com/cz/search/crawl"
+    TILES = "https://products.dm.de/product/products/tiles/CZ/dans/"
+
+    @staticmethod
+    def _num(s):
+        m = re.search(r"[\d\s]+,\d+|\d+", (s or "").replace("\xa0", " "))
+        return float(m[0].replace(" ", "").replace(",", ".")) if m else None
+
+    def _offer(self, p):
+        pr = ((p.get("tileData") or p).get("price") or {})
+        cur = self._num(((pr.get("price") or {}).get("current") or {}).get("value"))
+        prev = self._num(((pr.get("price") or {}).get("previous") or {}).get("value"))
+        if cur is None: cur = (p.get("trackingData") or (p.get("tileData") or {}).get("trackingData") or {}).get("price")
+        if cur is None: return None
+        infos = pr.get("tileInfos") or pr.get("infos") or []
+        amount = infos[0].split("(")[0].strip() if infos else ""
+        title = p.get("title")
+        title = title.get("tileHeadline") if isinstance(title, dict) else title
+        name = f"{p.get('brandName', '')} {title or ''}".strip()
+        self_url = (p.get("tileData") or {}).get("self") or p.get("self") or f"/p/d/{p['dan']}"
+        return store_offer("dm", "dm", p["dan"], name, amount, "https://www.dm.cz" + self_url,
+                           cur, prev, ean=p.get("gtin"))
+
+    def search(self, query, n=10):
+        import requests
+        for attempt in range(2):
+            r = requests.get(self.SEARCH, params=dict(query=query, searchType="product", pageSize=n),
+                             headers={"User-Agent": BROWSER_UA}, timeout=20)
+            if r.status_code != 429: break
+            time.sleep(20)  # dm's search rate limit clears after ~20 s
+        r.raise_for_status()
+        prods = r.json().get("products") or []
+        if is_ean(query): prods = [p for p in prods if str(p.get("gtin")) == query.strip()] or prods
+        return [dict(ref=o["store_ref"], name=o["name"], url=o["url"], offers=[o])
+                for o in map(self._offer, prods) if o]
+
+    def fetch(self, refs):
+        out, refs = {}, list(refs)
+        for i in range(0, len(refs), 30):
+            if i: time.sleep(2)
+            d = http_get(self.TILES + ",".join(refs[i:i + 30]), None, {"User-Agent": BROWSER_UA})
+            for dan, p in (d.get("products") or {}).items():
+                o = self._offer(dict(p, dan=p.get("dan", dan)))
+                if o: out[str(dan)] = [o]
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
 # Heureka: not wired yet. Each needs the live-inspect treatment Rohlík and Kupi got
 # before it gets a search()/fetch() adapter. Makro: needs MAKRO_COOKIE, shows bez DPH ->
 # add product.vat_pct back.
 
-SOURCES = {"rohlik": Rohlik, "makro": Makro, "kupi": Kupi}
+SOURCES = {"globus": Globus, "kosik": Kosik, "dm": Dm, "makro": Makro, "rohlik": Rohlik,
+           "kupi": Kupi}
 
 def source(name):
     if name not in SOURCES:
@@ -590,9 +749,16 @@ def unlink(src, ref, ean=None, need=None, product_id=None):
         col, val = ("product_id", product["id"]) if product else ("need_id", need_row["id"])
         c.execute(f"DELETE FROM watch WHERE source=? AND ref=? AND {col}=?", (src, ref, val))
         s = source(src)
-        ids = [r["id"] for r in c.execute(f"SELECT id, store_ref FROM offering WHERE source=? AND {col}=?",
-                                          (src, val)) if s.ref_of(r["store_ref"]) == ref]
+        rows = [r for r in c.execute(f"SELECT id, store_id, store_ref FROM offering WHERE source=? AND {col}=?",
+                                     (src, val)) if s.ref_of(r["store_ref"]) == ref]
+        ids = [r["id"] for r in rows]
         c.executemany("DELETE FROM offering WHERE id=?", [(i,) for i in ids])
+        if product:  # no live price left for a store -> its hand-entered price counts again
+            for store_id in {r["store_id"] for r in rows}:
+                if not c.execute("""SELECT 1 FROM offering WHERE product_id=? AND store_id=?
+                                    AND source!='manual' AND active=1""", (product["id"], store_id)).fetchone():
+                    c.execute("""UPDATE offering SET active=1 WHERE source='manual' AND store_id=?
+                                 AND product_id=?""", (store_id, product["id"]))
         c.commit()
         return len(ids)
     finally:
@@ -705,6 +871,32 @@ def product_delete(pid):
     c.execute("DELETE FROM watch WHERE product_id=?", (pid,))
     c.execute("DELETE FROM product WHERE id=?", (pid,))
     c.commit(); c.close()
+
+def suggest(product_id):
+    """Barcode matches for an item: ask every EAN-capable store for its EAN and return the
+    hits not linked yet, for one-click confirmation. Košík doesn't echo the EAN back, and a
+    single-item EAN can land on a multipack there, so its pack size is shown for checking."""
+    c = conn()
+    p = c.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
+    linked = {(w["source"], w["ref"]) for w in c.execute(
+        "SELECT source, ref FROM watch WHERE product_id=?", (product_id,))}
+    c.close()
+    if not p or not p["ean"]: return []
+    out = []
+    for name, cls in SOURCES.items():
+        if not getattr(cls, "ean_search", False): continue
+        try:
+            cands = cls().search(p["ean"])
+        except Exception as e:
+            print(f"  [suggest {name}] {e}"); continue
+        for cd in cands:
+            eans = {o.get("ean") for o in cd["offers"]} | ({cd["ref"]} if name == "makro" else set())
+            if name != "kosik" and p["ean"] not in eans: continue  # exact barcode only
+            if (name, cd["ref"]) in linked: continue
+            out.append(dict(cd, source=name))
+            if name == "kosik": break  # first hit only; its EAN isn't in the response
+        time.sleep(0.5)
+    return out
 
 def lookup(q):
     """EAN (or name) -> what the barcode-aware stores call it, to prefill a new item."""
@@ -887,6 +1079,8 @@ def serve(port):
                     t = crawl_state["thread"]
                     return self._json(dict(running=bool(t and t.is_alive()),
                                            log=crawl_state["log"].getvalue()[-2000:]))
+                if u.path == "/api/suggest":
+                    return self._json(dict(results=suggest(int(q["product_id"]))))
                 if u.path == "/api/lookup":
                     return self._json(dict(results=lookup(q["q"])))
                 if u.path == "/api/search":

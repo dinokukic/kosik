@@ -6,20 +6,26 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
 
 ## Current state (what works, what's stubbed)
 - **Watchlist** (`watchlist.csv`, 32 items) seeded from a real Makro receipt with
-  EANs, VAT %, and pack notes. Source of truth for items.
-- **Storage**: local SQLite (`pricetrack.py`) AND Bunny Database (SQLite-compatible,
-  Public Preview). Bunny is the target. DB `kosik` already created in Prague region;
-  schema + watchlist seeded via `bunny/seed.mjs`.
-- **Rohlík adapter: VERIFIED & WORKING** (`bunny/rohlik_probe.py` + `src_rohlik` in
-  pricetrack.py). See "Rohlík API" below. Rohlík has **no EAN search**.
-- **Kupi / Heureka / Makro adapters: UNVERIFIED SCAFFOLDS** — endpoints/selectors are
-  guesses. Each needs the same live-inspect-and-wire treatment Rohlík got (use Claude
-  in Chrome / DevTools Network tab against the logged-in live site).
-- **Dashboard** (`dashboard/index.html`): store-agnostic list, cheapest-per-item vs
-  30-day average. This is a PLACEHOLDER for the real matrix view (see below).
+  EANs, VAT %, pack notes, and explicit `unit`/`unit_qty`. Source of truth for products.
+- **Schema: three layers BUILT** (`bunny/schema.sql`, shared by local SQLite and Bunny):
+  `store`, `need`, `product`, `offering`, `price`, plus views `v_offer` (resolved
+  need/unit + latest price) and `v_matrix` (one cell per row×store, `is_cheapest`).
+  Bunny DB is seeded with it (16 stores, 32 products). The OLD `item`/`quote` tables are
+  still there, unused — safe to drop.
+- **CLI** (`pricetrack.py`): `init`, `seed`, `search <source>`, `match <source>` (to a
+  product by EAN or to a need with `--need`), `fetch` (by cached id), `need add|link`,
+  `store member <chain> on|off`, `matrix`, `export`.
+- **SOURCE ≠ STORE.** A source is where prices come from (`offering.source`); a store is
+  who sells. Rohlík is both. **Kupi is an aggregator, never a store**: its offers are
+  written under the chain (tesco, albert, kaufland…). Hand-entered prices are `manual`.
+- **Rohlík adapter: VERIFIED & WORKING** (`Rohlik` class in pricetrack.py; standalone
+  `bunny/rohlik_probe.py`). See "Rohlík API" below. Rohlík has **no EAN search**.
+- **Kupi adapter: VERIFIED & WORKING** (`Kupi` class). See "Kupi" below.
+- **Heureka / Makro: NOT WIRED** — need the same live-inspect treatment first.
+- **Dashboard** (`dashboard/index.html`): the matrix (rows × stores, per-unit, cheapest
+  marked, category filter) from `prices.json`. Basket view NOT built yet.
 
-## The data model to build (THREE layers — important)
-The current schema has only `item` + `quote`. Refactor to three layers:
+## The data model (THREE layers — important; built in bunny/schema.sql)
 
 1. **offering** — a specific product at a specific store (e.g. Makro's Harmony 16-roll
    4-ply), with price history. ~= today's `quote`, but tied to a per-store product ref.
@@ -75,8 +81,34 @@ per-store product ids == the matching step. Add-item UI and match UI are the sam
 - **Pin prices to Prague 1**: pass the user's logged-in session via `ROHLIK_COOKIE`
   (prices vary by delivery region; Prague 1 is the intended region).
 
+## Kupi.cz (VERIFIED live, 2026-09-23, no login, location Praha)
+- **Aggregator of weekly/weekend chain flyers.** Promo prices only — no shelf prices.
+- No JSON API; server-rendered HTML, plain GET works (no cookie, no bot wall).
+  - search: `GET https://www.kupi.cz/hledej?f=<q>` → products as
+    `<a href="/sleva/<slug>" title=… data-product-id="<n>">`
+  - product: `GET https://www.kupi.cz/sleva/<slug>` → every current offer.
+- Each offer = `<div class="discount_row" data-discount=<offer id> data-product=<n>
+  data-key=<pack e.g. 250-g>>` with chain `/letaky/<chain>`, `.discount_price_value`,
+  `.discount_amount` (pack), `.discounts_validity` text, optional `.discounts_club`
+  (loyalty condition, e.g. "Cena s Kaufland Card XTRA") and `.discount_note` (limits).
+  **Rows repeat across page sections → dedupe by offer id.**
+- **One chain can have several offers for one product at once** (card vs regular price,
+  hypermarket vs supermarket flyer). All are stored as separate `price` rows (`ref` =
+  offer id); `v_current_price` picks the cheapest one valid today that you're eligible for.
+  The user holds (or will hold) every chain's card, so card prices COUNT by default and are
+  shown with a "requires card" note (`store.member` = 0 would exclude a chain's card prices).
+- Validity text formats: `platí do úterý 29. 9.`, `čt 24. 9. – ne 27. 9.` (can start in
+  the FUTURE), `dnes končí`, `zítra končí`. Stored as `valid_from` / `promo_until`;
+  expired and not-yet-started offers drop out of the matrix automatically.
+- One Kupi product can span pack sizes (Rama 225 g / 400 g) → offering per
+  (chain, slug, pack): `store_ref = kupi:<slug>:<pack>`, unit_qty from the pack amount.
+- Chain slug → store id mapping in `Kupi.CHAINS` (penny-market→penny,
+  teta-drogerie→teta); unknown chains get created as stores with Kupi's name.
+- Match once per product (`match kupi <ean>` / `--need`); `fetch` re-reads each matched
+  product page (1.5 s apart) and new chains carrying it are added automatically.
+
 ## Other stores — same recipe, still to do
-For Kupi.cz (flyer promos, aggregates chains — highest value), Heureka (price floor),
+For Heureka (price floor),
 Makro (needs the user's session cookie; shows prices *bez DPH* — add VAT back using the
 item's vat_pct): open the live site logged in, watch DevTools → Network for the real
 search + price endpoints, capture the JSON shape, then write the adapter like Rohlík's.

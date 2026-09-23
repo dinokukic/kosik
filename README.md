@@ -9,14 +9,15 @@ verified Rohlík API, Bunny architecture). Start there.
 
 ## Layout
 ```
-watchlist.csv          32 items seeded from a real Makro receipt (EANs, VAT, packs)
-pricetrack.py          local SQLite tool: init | seed | fetch | export | report
-dashboard/index.html   placeholder store-agnostic view (real MATRIX view is TODO)
+watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, units)
+pricetrack.py          local SQLite tool: init | seed | search | match | fetch | need | matrix | export
+dashboard/index.html   store matrix: price per unit, cheapest per row marked
 bunny/
-  schema.sql           SQLite-compatible schema (ports straight to Bunny Database)
-  seed.mjs             load schema + watchlist into Bunny (auto-loads .env)
+  schema.sql           three-layer schema + views, shared by local SQLite and Bunny
+  seed.mjs             load schema + stores + products into Bunny (auto-loads .env)
   rohlik_probe.py      standalone, VERIFIED live Rohlík price puller
-requirements.txt       requests, beautifulsoup4
+requirements.txt       requests
+package.json           @bunny.net/database-client (for bunny/seed.mjs)
 .env                   Bunny creds (gitignored — never commit)
 ```
 
@@ -25,8 +26,19 @@ requirements.txt       requests, beautifulsoup4
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python pricetrack.py init && python pricetrack.py seed
-python pricetrack.py report
-python pricetrack.py fetch --source rohlik    # live Rohlík pull (verified)
+python pricetrack.py matrix                    # rows x stores in the terminal
+
+# match once per item (you pick the right pack), then fetch by id forever
+python pricetrack.py match rohlik 8593803421216 --query "jihočeské máslo 250"
+python pricetrack.py match kupi 8593803421216  # flyer offers at every chain (Kupi = aggregator)
+python pricetrack.py fetch                     # all sources: rohlik + kupi
+python pricetrack.py store member kaufland off # don't count Kaufland Card prices
+
+# needs: group different brands/packs into one comparable row
+python pricetrack.py need add "Máslo 82%" --unit kg --category dairy
+python pricetrack.py need link "Máslo 82%" 8593803421216
+python pricetrack.py match rohlik --need "Máslo 82%" --query "máslo 82 250"
+
 python pricetrack.py export                    # writes dashboard/prices.json
 cd dashboard && python3 -m http.server         # then open localhost:8000
 ```
@@ -38,10 +50,11 @@ python bunny/rohlik_probe.py "pampers premium care 1"
 
 ## Status
 - Rohlík adapter: **verified & working**.
-- Kupi / Heureka / Makro adapters: **unverified scaffolds** — wire each against the live
-  site (DevTools → Network), same as Rohlík. See CLAUDE.md.
-- Dashboard: placeholder; build the real store-matrix + basket next.
-- Storage: local SQLite works; Bunny Database `kosik` created + seeded.
+- Kupi (flyer aggregator): **verified & working** — offers filed under the real chain.
+- Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.
+- Schema: three layers (need / product / offering + price history) built.
+- Dashboard: matrix built; basket-by-store view next.
+- Storage: local SQLite works; Bunny Database `kosik` seeded with the three-layer schema.
 
 ## Do NOT commit
 `.env`, `.bunny/`, `prices.db`, `node_modules/`. All gitignored. If the DB token ever

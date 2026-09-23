@@ -24,11 +24,11 @@ node bunny/seed.mjs
 Sanity-check in the SQL shell:
 ```bash
 bunny db shell
-> SELECT count(*) FROM item;
+> SELECT count(*) FROM product;
 ```
 
 ## What's next (not built yet)
-- **pull-job.ts** — an Edge Script that fetches prices and writes `quote` rows.
+- **pull-job.ts** — an Edge Script that fetches prices for matched offerings and writes `price` rows.
   Deploy with `bunny scripts init` / `bunny scripts deploy`; Edge Scripting
   auto-injects BUNNY_DATABASE_URL/_AUTH_TOKEN. Trigger its URL from any external
   cron (e.g. weekly).

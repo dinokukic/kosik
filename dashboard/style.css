@@ -111,3 +111,53 @@
   .suggest .sh{display:flex;justify-content:space-between;align-items:center;font-size:.85rem;margin-bottom:.5rem}
   .suggest .cand{background:var(--paper)}
   .cand .src{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem;color:var(--muted);margin-right:.3rem}
+  /* shopping-list picks in the matrix */
+  td.cell{position:relative}
+  td.cell .pick{all:unset;display:block;cursor:pointer;text-align:right;padding-right:.9rem;border-radius:.3rem}
+  td.cell .pick:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  td.cell .pick:hover b{text-decoration:underline}
+  td.cell .ext{position:absolute;top:.35rem;right:.3rem;font-size:.7rem;color:var(--muted);text-decoration:none}
+  td.incart{box-shadow:inset 0 0 0 2px var(--ink)}
+  .inlist{display:block;font-size:.62rem;color:var(--ink);font-weight:600}
+  td.row .onlist{font-size:.68rem;color:var(--win);margin-top:.15rem}
+  /* shopping list */
+  .printhead{display:none}
+  .storegroup{margin:0 0 1.6rem;break-inside:avoid}
+  .storegroup h2{font-size:1.25rem;margin:0 0 .3rem;padding-bottom:.35rem;border-bottom:2px solid var(--ink);
+    display:flex;justify-content:space-between;align-items:baseline;gap:1rem;flex-wrap:wrap}
+  .storegroup h2 small{font-size:.72rem;font-weight:400;color:var(--muted);font-style:italic}
+  ul.todo{list-style:none;margin:0;padding:0}
+  .todo .item{display:grid;grid-template-columns:1fr auto auto auto;gap:.2rem .9rem;align-items:center;
+    padding:.55rem 0;border-bottom:1px solid var(--line)}
+  .todo .tick{display:flex;gap:.65rem;align-items:flex-start;cursor:pointer;min-width:0}
+  .todo .tick input{width:1.15rem;height:1.15rem;margin:.15rem 0 0;accent-color:var(--win);flex:none}
+  .todo .what{display:flex;flex-direction:column;min-width:0}
+  .todo .nm{font-size:1rem}
+  .todo .sub{font-size:.72rem;color:var(--muted);font-style:italic}
+  .todo .drift{font-style:normal;color:#b04a3a;margin-left:.2rem}
+  .todo .qty{display:inline-flex;align-items:center;gap:.35rem;font-variant-numeric:tabular-nums}
+  .todo .q{all:unset;cursor:pointer;width:1.5rem;height:1.5rem;text-align:center;line-height:1.5rem;
+    border:1px solid var(--line);border-radius:.35rem;color:var(--muted)}
+  .todo .q:hover{color:var(--ink);border-color:var(--ink)}
+  .todo .sum{font-variant-numeric:tabular-nums;text-align:right;min-width:5.5rem}
+  .todo .x{all:unset;cursor:pointer;color:var(--muted);font-size:1.1rem;padding:0 .2rem}
+  .todo .x:hover{color:#b04a3a}
+  .todo .done .nm,.todo .done .sum{text-decoration:line-through;color:var(--muted)}
+  .grand{text-align:right;font-size:1.05rem;border-top:2px solid var(--ink);padding-top:.6rem}
+  @media (max-width:560px){
+    .todo .item{grid-template-columns:1fr auto auto}
+    .todo .sum{grid-column:2/4;grid-row:2;min-width:0;font-size:.85rem}
+  }
+  @media print{
+    :root,:root:not([data-theme=light]){--ink:#000;--paper:#fff;--line:#bbb;--muted:#444;--win:#000;--winbg:#fff}
+    body{background:#fff;color:#000;font-size:11pt}
+    .wrap{max-width:none;padding:0}
+    header,.meta,.noprint,.toolbar{display:none !important}
+    .printhead{display:block;font-size:13pt;font-weight:600;border-bottom:2px solid #000;padding-bottom:.3rem;margin-bottom:.8rem}
+    .storegroup{margin-bottom:1rem}
+    .todo .item{padding:.3rem 0;grid-template-columns:1fr auto auto}
+    .todo .tick input{appearance:none;-webkit-appearance:none;border:1.5px solid #000;border-radius:2px;
+      width:12pt;height:12pt}
+    .todo .tick input:checked{background:#000}
+    .todo .drift{color:#000}
+  }

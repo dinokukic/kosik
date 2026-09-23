@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Košík list</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Košík<small>shopping list, by store</small></h1>
+    <nav><a href="./">Matrix</a><a href="match.html">Match</a><a href="list.html" aria-current="page">List</a></nav>
+  </header>
+  <div class="printhead" id="printhead"></div>
+  <div class="meta" id="meta"></div>
+  <div class="toolbar noprint" id="toolbar" hidden>
+    <button class="btn" id="print">Print</button>
+    <button class="btn ghost" id="clearChecked">Remove ticked</button>
+    <button class="btn ghost danger" id="clearAll">Clear list</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div id="stores"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
+const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
+let ITEMS = [];
+
+async function api(path, body){
+  const r = await fetch("api/"+path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
+                                               body:JSON.stringify(body)} : {});
+  const d = await r.json().catch(()=>({error:"server not running? start: python3 pricetrack.py serve"}));
+  if(!r.ok || d.error) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+async function load(){
+  try{ ITEMS = (await api("cart")).items; render(); }
+  catch(e){
+    $("stores").innerHTML = `<div class="loader">Couldn't reach the local server (${esc(e.message)}).<br>
+      Start it with <code>python3 pricetrack.py serve</code> and open <code>localhost:8765/list.html</code>.</div>`;
+  }
+}
+
+function line(it){
+  const price = it.price_incl ?? 0;
+  const changed = it.current_price != null && Math.abs(it.current_price - price) > 0.005;
+  const gone = it.current_price == null;
+  const notes = [
+    it.kind === "flyer" ? "flyer · kupi.cz" : "",
+    it.promo_until ? `akce do ${dm(it.promo_until)}` : "",
+    it.club ? "requires card" : "",
+    it.note && it.kind !== "flyer" ? it.note : "",
+  ].filter(Boolean);
+  const drift = gone ? `<span class="drift">no longer listed at this price</span>`
+    : changed ? `<span class="drift">now ${CZK(it.current_price)}</span>` : "";
+  return `<li class="item ${it.checked?'done':''}">
+    <label class="tick"><input type="checkbox" data-check="${it.id}" ${it.checked?'checked':''}>
+      <span class="what"><span class="nm">${esc(it.row_name)}</span>
+        <span class="sub">${esc(it.item_name||"")}${it.amount?' · '+esc(it.amount):''} · ${CZK(price)} each${notes.length?' · '+esc(notes.join(' · ')):''} ${drift}</span>
+      </span></label>
+    <span class="qty"><button class="q noprint" data-dec="${it.id}" aria-label="one less">−</button><b>${it.qty}×</b><button class="q noprint" data-inc="${it.id}" aria-label="one more">+</button></span>
+    <span class="sum">${CZK(price * it.qty)}</span>
+    <button class="x noprint" data-del="${it.id}" aria-label="remove" title="remove">×</button>
+  </li>`;
+}
+
+function render(){
+  const byStore = {};
+  ITEMS.forEach(it => (byStore[it.store_name || it.store_id] ??= []).push(it));
+  const groups = Object.entries(byStore).sort((a,b)=>b[1].length-a[1].length || a[0].localeCompare(b[0]));
+  const total = ITEMS.reduce((s,it)=>s + (it.price_incl||0)*it.qty, 0);
+  const left = ITEMS.filter(it=>!it.checked).length;
+  $("toolbar").hidden = !ITEMS.length;
+  $("meta").textContent = ITEMS.length
+    ? `${ITEMS.length} items · ${groups.length} stores · ${left} still to get · total ${CZK(total)}`
+    : "";
+  $("printhead").textContent = `Nákupní seznam · ${new Date().toLocaleDateString("cs-CZ")} · ${CZK(total)}`;
+  if(!ITEMS.length){
+    $("stores").innerHTML = `<div class="loader">Your list is empty. Tap prices on the <a href="./">Matrix</a> to add items at a store.</div>`;
+    return;
+  }
+  $("stores").innerHTML = groups.map(([store, items])=>{
+    const sub = items.reduce((s,it)=>s + (it.price_incl||0)*it.qty, 0);
+    const done = items.filter(it=>it.checked).length;
+    const ordered = [...items].sort((a,b)=>a.checked-b.checked);  // ticked sink to the bottom
+    return `<section class="storegroup">
+      <h2>${esc(store)}<small>${items.length} item${items.length>1?'s':''}${done?` · ${done} done`:''} · ${CZK(sub)}</small></h2>
+      <ul class="todo">${ordered.map(line).join("")}</ul></section>`;
+  }).join("") + `<p class="grand">Total <b>${CZK(total)}</b></p>`;
+  document.querySelectorAll("[data-check]").forEach(x=>x.onchange=()=>update(+x.dataset.check, {checked:x.checked}));
+  document.querySelectorAll("[data-inc]").forEach(b=>b.onclick=()=>bump(+b.dataset.inc, 1));
+  document.querySelectorAll("[data-dec]").forEach(b=>b.onclick=()=>bump(+b.dataset.dec, -1));
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>remove({id:+b.dataset.del}));
+}
+
+async function update(id, change){
+  const it = ITEMS.find(x=>x.id===id); Object.assign(it, change); render();  // optimistic
+  try{ await api("cart/update", {id, ...change}); }
+  catch(e){ $("status").textContent = e.message; load(); }
+}
+function bump(id, d){
+  const it = ITEMS.find(x=>x.id===id);
+  if(it.qty + d < 1) return;
+  update(id, {qty: it.qty + d});
+}
+async function remove(body){
+  try{ await api("cart/remove", body); await load(); }
+  catch(e){ $("status").textContent = e.message; }
+}
+$("print").onclick = () => window.print();
+$("clearChecked").onclick = () => remove({checked_only:true});
+$("clearAll").onclick = () => { if(confirm("Clear the whole list?")) remove({all:true}); };
+load();
+</script>
+</body>
+</html>

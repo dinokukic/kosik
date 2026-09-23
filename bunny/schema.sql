@@ -107,6 +107,29 @@ CREATE TABLE IF NOT EXISTS crawl_log (
   deals    INTEGER
 );
 
+-- Shopping list: picked in the matrix (one store per row), printed as a to-do by store.
+-- Price details are snapshotted when added; the list page also shows the current price.
+CREATE TABLE IF NOT EXISTS cart_item (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  row_key     TEXT NOT NULL UNIQUE,         -- matrix row (need / product); one store per row
+  row_name    TEXT,
+  unit        TEXT,
+  store_id    TEXT NOT NULL,
+  store_name  TEXT,
+  kind        TEXT NOT NULL DEFAULT 'store',-- store (a store's own price) | flyer (Kupi deal)
+  item_name   TEXT,                         -- the store's name for it
+  amount      TEXT,
+  price_incl  REAL,                         -- pack price when added
+  unit_price  REAL,
+  promo_until TEXT,
+  club        TEXT,
+  note        TEXT,
+  url         TEXT,
+  qty         INTEGER NOT NULL DEFAULT 1,
+  checked     INTEGER NOT NULL DEFAULT 0,
+  added       TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_offering_product ON offering(product_id);
 CREATE INDEX IF NOT EXISTS idx_offering_need ON offering(need_id);
 CREATE INDEX IF NOT EXISTS idx_price_ts ON price(ts);

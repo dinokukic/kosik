@@ -13,6 +13,7 @@ watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, 
 pricetrack.py          the tool (Bunny Database): init | seed | search | match | fetch | crawl | serve | ...
 dashboard/index.html   store matrix: price per unit, cheapest per row marked
 dashboard/match.html   match screen: pick each item's product per source (needs `serve`)
+dashboard/list.html    shopping list by store (tap prices in the matrix to fill it); printable
 dashboard/style.css    shared styles
 bunny/
   schema.sql           three-layer schema + views (Bunny; same SQL works locally)
@@ -62,7 +63,7 @@ python bunny/rohlik_probe.py "pampers premium care 1"
   (weekly crawl), shown as its own column; store prices come from the stores directly.
 - Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.
 - Schema: three layers (need / product / offering + price history) built.
-- Dashboard: matrix built; basket-by-store view next.
+- Dashboard: matrix, match screen and shopping list (by store, printable) built.
 - Storage: **Bunny Database `kosik`** is the database; `prices.db` is a local fallback.
 
 ## Do NOT commit

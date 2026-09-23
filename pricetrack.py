@@ -1352,6 +1352,76 @@ def export():
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"export ok -> {EXPORT} ({len(rows)} rows x {len(stores)} stores)")
 
+# ---------------------------------------------------------------- shopping list
+def matrix_cell(rows, stores, row_key, store_id, kind):
+    """(row, snapshot dict) for a matrix cell, or (row, None) if it has no price now."""
+    row = next((r for r in rows if r["key"] == row_key), None)
+    if not row: return None, None
+    names = {s["id"]: s["name"] for s in stores}
+    if kind == "flyer":
+        d = row.get("deal")
+        if not d or d["store_id"] != store_id: return row, None
+        return row, dict(store_name=d["store_name"] or store_id, item_name=d["product_name"],
+                         amount=d["amount"], price_incl=d["price_incl"], unit_price=d["unit_price"],
+                         promo_until=d["valid_to"], club=d["club"], note=d["note"], url=d["url"])
+    cell = row["cells"].get(store_id)
+    if not cell: return row, None
+    return row, dict(store_name=names.get(store_id, store_id), item_name=cell["offering_name"],
+                     amount=None, price_incl=cell["price_incl"], unit_price=cell["unit_price"],
+                     promo_until=cell["promo_until"], club=cell["club"], note=cell["note"],
+                     url=cell["url"])
+
+def cart_toggle(row_key, store_id, kind="store"):
+    """Tap a matrix cell: add that item at that store; tap again to remove. A row is in the
+    list at one store at a time, so tapping another store's cell moves it there."""
+    stores, rows = matrix_rows()
+    row, snap = matrix_cell(rows, stores, row_key, store_id, kind)
+    if not row or not snap: raise ValueError("that cell has no current price")
+    c = conn()
+    cur = c.execute("SELECT store_id, kind FROM cart_item WHERE row_key=?", (row_key,)).fetchone()
+    if cur and cur["store_id"] == store_id and cur["kind"] == kind:
+        c.execute("DELETE FROM cart_item WHERE row_key=?", (row_key,)); c.commit(); c.close()
+        return False
+    c.execute("""INSERT INTO cart_item(row_key,row_name,unit,store_id,store_name,kind,item_name,amount,
+                                       price_incl,unit_price,promo_until,club,note,url,qty,checked,added)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?)
+                 ON CONFLICT(row_key) DO UPDATE SET store_id=excluded.store_id,
+                   store_name=excluded.store_name, kind=excluded.kind, item_name=excluded.item_name,
+                   amount=excluded.amount, price_incl=excluded.price_incl,
+                   unit_price=excluded.unit_price, promo_until=excluded.promo_until,
+                   club=excluded.club, note=excluded.note, url=excluded.url, checked=0""",
+              (row_key, row["name"], row["unit"], store_id, snap["store_name"], kind, snap["item_name"],
+               snap["amount"], snap["price_incl"], snap["unit_price"], snap["promo_until"],
+               snap["club"], snap["note"], snap["url"], today()))
+    c.commit(); c.close()
+    return True
+
+def cart_items():
+    """The list, with each line's current price at the same store (None if it's gone)."""
+    stores, rows = matrix_rows()
+    c = conn()
+    items = [dict(r) for r in c.execute("SELECT * FROM cart_item ORDER BY store_name, row_name")]
+    c.close()
+    for it in items:
+        _, snap = matrix_cell(rows, stores, it["row_key"], it["store_id"], it["kind"])
+        it["current_price"] = snap["price_incl"] if snap else None
+    return items
+
+def cart_update(item_id, qty=None, checked=None):
+    c = conn()
+    if qty is not None:
+        c.execute("UPDATE cart_item SET qty=? WHERE id=?", (max(1, int(qty)), item_id))
+    if checked is not None:
+        c.execute("UPDATE cart_item SET checked=? WHERE id=?", (int(bool(checked)), item_id))
+    c.commit(); c.close()
+
+def cart_remove(item_id=None, checked_only=False, everything=False):
+    c = conn()
+    if item_id is not None: c.execute("DELETE FROM cart_item WHERE id=?", (item_id,))
+    elif checked_only: c.execute("DELETE FROM cart_item WHERE checked=1")
+    elif everything: c.execute("DELETE FROM cart_item")
+    c.commit(); c.close()
+
 # ---------------------------------------------------------------- local server
 def products_status():
     """Every product with what it's matched to, per source, and today's offers."""
@@ -1435,8 +1505,13 @@ def serve(port):
             try:
                 if u.path == "/api/matrix":
                     stores, rows = matrix_rows()
+                    c = conn()
+                    cart = {r["row_key"]: dict(store_id=r["store_id"], kind=r["kind"])
+                            for r in c.execute("SELECT row_key, store_id, kind FROM cart_item")}
                     return self._json(dict(generated=dt.datetime.now().isoformat(timespec="minutes"),
-                                           stores=stores, rows=rows))
+                                           stores=stores, rows=rows, cart=cart))
+                if u.path == "/api/cart":
+                    return self._json(dict(items=cart_items()))
                 if u.path == "/api/products":
                     return self._json(dict(products=products_status(), sources=list(SOURCES)))
                 if u.path == "/api/crawl":
@@ -1475,6 +1550,15 @@ def serve(port):
                     return self._json(dict(ok=True))
                 if u == "/api/product/delete":
                     product_delete(a["id"])
+                    return self._json(dict(ok=True))
+                if u == "/api/cart/toggle":
+                    return self._json(dict(ok=True, in_cart=cart_toggle(a["row_key"], a["store_id"],
+                                                                         a.get("kind", "store"))))
+                if u == "/api/cart/update":
+                    cart_update(a["id"], a.get("qty"), a.get("checked"))
+                    return self._json(dict(ok=True))
+                if u == "/api/cart/remove":
+                    cart_remove(a.get("id"), a.get("checked_only", False), a.get("all", False))
                     return self._json(dict(ok=True))
                 if u == "/api/crawl":
                     return self._json(dict(ok=True, started=start_crawl()))

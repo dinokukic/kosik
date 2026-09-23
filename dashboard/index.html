@@ -10,7 +10,7 @@
 <div class="wrap">
   <header>
     <h1>Košík<small>every store's price per unit — cheapest per row marked</small></h1>
-    <nav><a href="./" aria-current="page">Matrix</a><a href="match.html">Match</a></nav>
+    <nav><a href="./" aria-current="page">Matrix</a><a href="match.html">Match</a><a href="list.html" id="navList">List</a></nav>
   </header>
   <div class="meta" id="meta"></div>
   <div class="filters" id="filters"></div>
@@ -20,7 +20,7 @@
 <script>
 const CZK = n => n.toLocaleString("cs-CZ",{maximumFractionDigits:n<100?2:0}) + " Kč";
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let DATA=null, CAT="all";
+let DATA=null, CAT="all", LIVE=false;  // LIVE = served by pricetrack.py (list works)
 
 function apply(d){
   DATA=d;
@@ -31,13 +31,16 @@ function apply(d){
     "Cells show price per unit (per kg, l, roll, egg, piece or pack), VAT included, from each store's "
     + "latest capture; the pack price is underneath. Green = cheapest in the row. akce = promo, often time-limited; requires card = loyalty-card price "
     + "(hover for which card). Store columns come from the stores directly; the flyer column is the best current "
-    + "flyer deal across all chains, found by the weekly kupi.cz crawl. Flyer prices via Kupi are filed under the chain.";
+    + "flyer deal across all chains, found by the weekly kupi.cz crawl. "
+    + (LIVE ? "Tap a price to put that item on your shopping list at that store (tap again to take it off; "
+             + "tapping another store moves it). ↗ opens the store's page." : "");
 }
 async function load(){
   try{
     // live from `pricetrack.py serve`, else the last export
     let r = await fetch("api/matrix").catch(()=>null);
-    if(!r || !r.ok) r = await fetch("prices.json?"+Date.now());
+    LIVE = !!(r && r.ok);
+    if(!LIVE) r = await fetch("prices.json?"+Date.now());
     apply(await r.json());
   }catch(e){
     document.getElementById("list").innerHTML =
@@ -59,14 +62,26 @@ function buildFilters(){
 }
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
 // Best current flyer deal for the row (Kupi aggregates chain flyers; not a store column).
+function inCart(r, store, kind){ const c = DATA.cart?.[r.key]; return !!c && c.store_id===store && c.kind===kind; }
+// A price cell: tap = toggle on the shopping list (when served), ↗ = the store's page.
+function cellHtml(r, store, kind, cls, title, inner, url){
+  const on = LIVE && inCart(r, store, kind);
+  const body = LIVE
+    ? `<button class="pick" data-row="${esc(r.key)}" data-store="${esc(store)}" data-kind="${kind}" aria-pressed="${on}"
+         title="${on?'on your list, tap to remove':'add to shopping list'}">${inner}${on?'<span class="inlist">✓ on list</span>':''}</button>`
+    : inner;
+  const ext = url ? `<a class="ext" href="${esc(url)}" target="_blank" rel="noopener" title="open at the store">↗</a>` : "";
+  return `<td class="cell ${cls} ${on?'incart':''}" title="${esc(title)}">${body}${ext}</td>`;
+}
 function flyerCell(r){
   const d = r.deal;
   if(!d) return `<td class="flyer empty">·</td>`;
   const card = d.club ? `<span class="pill club" title="${esc(d.club)}">requires card</span>` : "";
   const perPack = r.unit!=="pack" ? ` · ${CZK(d.price_incl)}${d.amount?'/'+esc(d.amount):''}` : "";
-  return `<td class="cell flyer ${d.is_cheapest?'win':''}" title="${esc([d.product_name, d.club, d.note].filter(Boolean).join(' · '))}">`
-    + `<a href="${esc(d.url)}" target="_blank" rel="noopener"><b>${CZK(d.unit_price)}</b>${card}`
-    + `<span class="tot">${esc(d.store_name||d.store_id)}${perPack}${d.valid_to?' · do '+dm(d.valid_to):''}</span></a></td>`;
+  return cellHtml(r, d.store_id, "flyer", `flyer ${d.is_cheapest?'win':''}`,
+    [d.product_name, d.club, d.note].filter(Boolean).join(' · '),
+    `<b>${CZK(d.unit_price)}</b>${card}<span class="tot">${esc(d.store_name||d.store_id)}${perPack}${d.valid_to?' · do '+dm(d.valid_to):''}</span>`,
+    d.url);
 }
 
 function render(){
@@ -84,15 +99,39 @@ function render(){
       const perPack = r.unit!=="pack" ? `<span class="tot">${CZK(c.price_incl)}</span>` : "";
       const promo = (c.is_promo ? `<span class="pill" title="${c.promo_until?'do '+esc(c.promo_until):''}">akce</span>` : "")
         + (c.club ? `<span class="pill club" title="${esc(c.club)}">requires card</span>` : "");
-      const inner = `<b>${CZK(c.unit_price)}</b>${promo}${perPack}`;
-      return `<td class="cell ${c.is_cheapest?'win':''}" title="${esc([c.offering_name, c.club, c.note, 'via '+c.source+' · '+c.ts].filter(Boolean).join(' · '))}">`
-        + (c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${inner}</a>` : inner) + `</td>`;
+      return cellHtml(r, s.id, "store", c.is_cheapest?'win':'',
+        [c.offering_name, c.club, c.note, 'via '+c.source+' · '+c.ts].filter(Boolean).join(' · '),
+        `<b>${CZK(c.unit_price)}</b>${promo}${perPack}`, c.url);
     }).join("");
-    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">per ${esc(r.unit)}</div></td>`
+    const ci = LIVE && DATA.cart?.[r.key];
+    const where = ci ? `<div class="onlist">on list · ${esc((DATA.stores.find(s=>s.id===ci.store_id)||{}).name
+                        || (r.deal && r.deal.store_id===ci.store_id && r.deal.store_name) || ci.store_id)}${ci.kind==='flyer'?' (flyer)':''}</div>` : "";
+    return `<tr><td class="row"><div class="nm">${esc(r.name)}</div><div class="per">per ${esc(r.unit)}</div>${where}</td>`
       + `${flyerCell(r)}${tds}</tr>`;
   }).join("");
+  const keepX = document.querySelector("#list .scroll")?.scrollLeft || 0;
   document.getElementById("list").innerHTML =
     `<div class="scroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  document.querySelector("#list .scroll").scrollLeft = keepX;
+  document.querySelectorAll("#list .pick").forEach(b=>b.onclick=()=>toggle(b));
+  navCount();
+}
+function navCount(){
+  const n = Object.keys(DATA.cart||{}).length;
+  document.getElementById("navList").textContent = n ? `List (${n})` : "List";
+}
+async function toggle(b){
+  b.disabled = true;
+  try{
+    const r = await fetch("api/cart/toggle", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({row_key:b.dataset.row, store_id:b.dataset.store, kind:b.dataset.kind})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || r.statusText);
+    DATA.cart = DATA.cart || {};
+    if(d.in_cart) DATA.cart[b.dataset.row] = {store_id:b.dataset.store, kind:b.dataset.kind};
+    else delete DATA.cart[b.dataset.row];
+    render();
+  }catch(e){ alert("Couldn't update the list: " + e.message); b.disabled = false; }
 }
 load();
 </script>

@@ -91,7 +91,12 @@ and the user doesn't care. Infer a sensible unit from category; allow override.
 - **The cheapest cell per row is always visually marked.**
 - The matrix shows TRUTH (cheapest everywhere). It does NOT auto-decide.
 
-## Basket = shopping-list-by-store (manual, not an optimizer)
+## Basket = shopping-list-by-store (manual, not an optimizer) — BUILT 2026-09-23
+Implemented as: tap a price cell in the matrix (store cell or the flyer cell) to put that
+row on the list at that store (`cart_item`, one store per row; tapping another store moves
+it; details snapshotted, current price shown next to it). `list.html` = to-do list grouped
+by store with ticks, qty, subtotals, total; Print gives a black-and-white checklist.
+Original brief:
 - User picks which stores they'll actually visit this week.
 - For each need, show the cheapest offering **at each store being visited**.
 - Running total per store + overall. User can drop a store and knowingly take a

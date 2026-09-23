@@ -38,11 +38,15 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   the NET price per pack; VAT is added from the item's `vat_pct` (matches the receipt to the
   haléř). Matched per pack by EAN (`store_ref` = EAN). A live price for a store retires the
   hand-entered (`manual`) price for that store + item. Details: `docs/store-apis.md`.
-- **Direct store connectors BUILT & VERIFIED 2026-09-23: Globus, Košík.cz, dm** (classes
-  `Globus`, `Kosik`, `Dm`; store ids globus / kosik-cz / dm). Still to build (surveyed in
-  `docs/store-apis.md`): Tesco, Billa, Rossmann, Teta. Lidl, Albert, Kaufland, Penny = flyer
-  only (Kupi).
-- **Barcode matches**: sources with `ean_search = True` (Globus, Košík, dm, Makro) are asked
+- **Direct store connectors BUILT & VERIFIED 2026-09-23: Globus, Košík.cz, Tesco, Billa, dm,
+  Rossmann, Teta, Makro, Rohlík** (one class each; endpoints in `docs/store-apis.md`).
+  Lidl, Albert, Kaufland, Penny = flyer only (Kupi). Several prices for one listing (Tesco
+  Clubcard, Rossmann Club / Rossmánek, Teta conditional promo + club) are separate `price`
+  rows (`ref`), card ones with `club` set -> "requires card" in the UI.
+- `.env` is loaded by pricetrack.py: `TESCO_XAPI_KEY` (Tesco's public web-app key, required
+  for Tesco), optional `ROHLIK_COOKIE`, `MAKRO_STORE` (default 00005 Černý Most).
+- **Barcode matches**: sources with `ean_search = True` (Globus, Košík, dm, Rossmann, Teta,
+  Makro; Tesco via `ean_via_name`: name search filtered by gtin) are asked
   for an item's EAN when it's opened on the match screen (`/api/suggest`); exact hits get a
   one-click Link / Link all. Globus fuzzes EANs and Košík doesn't echo them back, so hits
   are exact-matched where possible and Košík's pack is shown for the user to check.

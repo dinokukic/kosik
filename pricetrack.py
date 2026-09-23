@@ -36,6 +36,12 @@ WATCHLIST = ROOT / "watchlist.csv"
 EXPORT = ROOT / "dashboard" / "prices.json"
 UA = "personal-pricetrack/1.0"
 
+# .env (gitignored) -> environment: TESCO_XAPI_KEY, ROHLIK_COOKIE, MAKRO_STORE, Bunny creds
+if (ROOT / ".env").exists():
+    for _line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+        _k, _, _v = _line.partition("=")
+        if _k.strip() and not _k.startswith("#") and _v: os.environ.setdefault(_k.strip(), _v.strip())
+
 STORES = [  # id, name, url, prices_ex_vat
     ("rohlik", "Rohlík", "https://www.rohlik.cz", 0),
     ("makro", "Makro", "https://sortiment.makro.cz", 1),
@@ -590,12 +596,223 @@ class Dm:
 
     def ref_of(self, store_ref): return store_ref
 
+def extra_price(o, price, ref, club=None, note=None, promo=False, until=None):
+    """Another price for the same listing (card / conditional promo): same offering, own row."""
+    return dict(o, price_incl=float(price), ref=ref, club=club, note=note, is_promo=promo,
+                promo_until=until if promo else None)
+
+class Tesco:
+    """VERIFIED 2026-09-23 via xapi.tesco.com GraphQL (the website is behind Akamai; the API
+    isn't). Needs the public web-app key in .env TESCO_XAPI_KEY. No EAN search, but every
+    product carries its gtin -> barcode matches search by name and keep the exact gtin.
+    price.actual = current incl. normal promo; Clubcard price only as text in a promotion
+    with attributes CLUBCARD_PRICING ("119,90 Kč ... s Clubcard") -> parsed into a club row."""
+    aggregator = False
+    ean_via_name = True
+    URL = "https://xapi.tesco.com/"
+    NODE = ("id gtin title isForSale price{actual unitPrice unitOfMeasure} "
+            "promotions{startDate endDate description attributes price{beforeDiscount afterDiscount}}")
+
+    def _post(self, ops):
+        import requests
+        key = os.environ.get("TESCO_XAPI_KEY")
+        if not key: raise RuntimeError("TESCO_XAPI_KEY missing in .env (see docs/store-apis.md)")
+        r = requests.post(self.URL, json=ops, timeout=20, headers={
+            "User-Agent": BROWSER_UA, "Content-Type": "application/json", "x-apikey": key,
+            "language": "cs-CZ", "region": "CZ"})
+        r.raise_for_status()
+        return r.json()
+
+    def _offers(self, n):
+        if not n or not n.get("price") or n["price"].get("actual") is None: return []
+        size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:x\s*\d+(?:[.,]\d+)?\s*)?(?:kg|g|ml|l|ks)\b)", n["title"], re.I)
+        regular, until, club = None, None, None
+        for pr in n.get("promotions") or []:
+            if "CLUBCARD_PRICING" in (pr.get("attributes") or []):
+                m = re.search(r"(\d+(?:[ \xa0]\d{3})*,\d{2})\s*Kč", pr.get("description") or "")
+                if m: club = (float(m[1].replace(" ", "").replace("\xa0", "").replace(",", ".")),
+                              (pr.get("endDate") or "")[:10] or None)
+            elif (pr.get("price") or {}).get("beforeDiscount"):
+                regular = pr["price"]["beforeDiscount"]; until = (pr.get("endDate") or "")[:10] or None
+        gtin = (n.get("gtin") or "").lstrip("0") or None
+        o = store_offer("tesco", "Tesco", n["id"], n["title"], size[1] if size else "",
+                        f"https://nakup.itesco.cz/groceries/cs-CZ/products/{n['id']}",
+                        n["price"]["actual"], regular, until, ean=gtin)
+        out = [o]
+        if club and club[0] < o["price_incl"]:
+            out.append(extra_price(o, club[0], "clubcard", club="Tesco Clubcard", promo=True, until=club[1]))
+        return out
+
+    def search(self, query, n=12):
+        d = self._post([{"operationName": "S", "variables": {"q": query, "n": n}, "query":
+            "query S($q:String!,$n:Int){search(query:$q,page:1,count:$n){results{node{... on ProductInterface{%s}}}}}"
+            % self.NODE}])
+        nodes = [r["node"] for r in (d[0]["data"]["search"] or {}).get("results") or []]
+        return [dict(ref=offs[0]["store_ref"], name=offs[0]["name"], url=offs[0]["url"], offers=offs)
+                for offs in map(self._offers, nodes) if offs]
+
+    def fetch(self, refs):
+        out, refs = {}, list(refs)
+        for i in range(0, len(refs), 20):
+            if i: time.sleep(1.5)
+            ops = [{"operationName": f"P{j}", "variables": {"t": t}, "query":
+                    "query P%d($t:String){product(tpnc:$t){%s}}" % (j, self.NODE)}
+                   for j, t in enumerate(refs[i:i + 20])]
+            for res in self._post(ops):
+                offs = self._offers((res.get("data") or {}).get("product"))
+                if offs: out[offs[0]["store_ref"]] = offs
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+class Billa:
+    """VERIFIED 2026-09-23. billa.cz catalogue API (checkout goes via Wolt/foodora, prices
+    are Billa's own). No login, no EAN anywhere -> match by name. Amounts in haléře.
+    During a promo regular.value is the PROMO price and standard.value the shelf price."""
+    aggregator = False
+    BASE = "https://www.billa.cz"
+
+    def _offer(self, p):
+        pr = p.get("price") or {}
+        cur = (pr.get("regular") or {}).get("value")
+        if cur is None: return None
+        std = (pr.get("standard") or {}).get("value") or pr.get("crossed")
+        amount = f"{p.get('amount', '')} {p.get('volumeLabelShort', '')}".strip()
+        return store_offer("billa", "Billa", p["sku"], p["name"], amount,
+                           f"{self.BASE}/produkt/{p.get('slug', p['sku'])}", cur / 100,
+                           std / 100 if std else None,
+                           note=f"{pr['discountPercentage']} %" if pr.get("discountPercentage") else None)
+
+    def search(self, query, n=12):
+        from urllib.parse import quote
+        d = http_get(f"{self.BASE}/api/product-discovery/products/search/{quote(query)}",
+                     dict(pageSize=n), {"User-Agent": BROWSER_UA, "Accept": "application/json"})
+        return [dict(ref=o["store_ref"], name=o["name"], url=o["url"], offers=[o])
+                for o in map(self._offer, d.get("results") or []) if o]
+
+    def fetch(self, refs):
+        out, refs = {}, list(refs)
+        for i in range(0, len(refs), 30):
+            if i: time.sleep(1.5)
+            params = [("skus", r) for r in refs[i:i + 30]] + [("pageSize", 30)]
+            d = http_get(f"{self.BASE}/api/product-discovery/products", params,
+                         {"User-Agent": BROWSER_UA, "Accept": "application/json"})
+            for p in d.get("results") or []:
+                o = self._offer(p)
+                if o: out[o["store_ref"]] = [o]
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+def luigi(tracker, query, size=12, filters=()):
+    """Luigi's Box search (Rossmann + Teta use it). Unknown EANs return fuzzy junk: verify."""
+    params = [("tracker_id", tracker), ("q", query), ("size", size)] + [("f[]", f) for f in filters]
+    return (http_get("https://live.luigisbox.com/search", params, {"User-Agent": BROWSER_UA})
+            .get("results") or {}).get("hits") or []
+
+class Rossmann:
+    """VERIFIED 2026-09-23 via Luigi's Box (tracker 715445-966389), no login. Search by name,
+    EAN or order number (id_erp); price by id = search q=<id_erp>, one call per item.
+    Prices: regular (shelf), clubMember (Rossmann Club app), rossmanekMember (kids club)."""
+    aggregator = False
+    ean_search = True
+    TRACKER = "715445-966389"
+
+    def _offers(self, h):
+        a = h.get("attributes") or {}
+        reg = a.get("price_regular_CZK_incVat")
+        ids = a.get("id_erp") or []
+        if reg is None or not ids: return []
+        eans = [e.lstrip("0") for e in a.get("id_ean") or []]
+        size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", a.get("title", ""), re.I)
+        o = store_offer("rossmann", "Rossmann", ids[0],
+                        f"{(a.get('PRODUCER') or [''])[0]} {a.get('title', '')}".strip(),
+                        size[1] if size else "", f"https://www.rossmann.cz/vyhledavani?q={ids[0]}",
+                        reg, ean=eans[0] if eans else None)
+        o["eans"] = eans
+        out = [o]
+        for key, label in (("price_clubMember_CZK_incVat", "Rossmann Club"),
+                           ("price_rossmanekMember_CZK_incVat", "Rossmánek (kids club)")):
+            v = a.get(key)
+            if v is not None and v < reg - 0.001:
+                out.append(extra_price(o, v, key.split("_")[1], club=label, promo=True))
+        return out
+
+    def search(self, query, n=12):
+        hits = luigi(self.TRACKER, query, n)
+        cands = [offs for offs in map(self._offers, hits) if offs]
+        if is_ean(query): cands = [c for c in cands if query.strip().lstrip("0") in c[0]["eans"]]
+        return [dict(ref=c[0]["store_ref"], name=c[0]["name"], url=c[0]["url"], offers=c) for c in cands]
+
+    def fetch(self, refs):
+        out = {}
+        for i, ref in enumerate(refs):
+            if i: time.sleep(1.0)
+            for offs in map(self._offers, luigi(self.TRACKER, ref, 3)):
+                if offs and offs[0]["store_ref"] == ref: out[ref] = offs; break
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
+class Teta:
+    """VERIFIED 2026-09-23. Search via Luigi's Box (tracker 407635-780988, name or EAN,
+    verify the EAN); price by variant code from be.tetadrogerie.cz (Sylius), no login.
+    bbyPrices in haléře: zcmd = shelf, acmd = promo (often conditional, see 'conditions'),
+    club = Teta club price."""
+    aggregator = False
+    ean_search = True
+    TRACKER = "407635-780988"
+    BE = "https://be.tetadrogerie.cz/api/v2/shop/product-variants/"
+
+    def _offers(self, code, name, prices, ean=None, amount=""):
+        if isinstance(prices, str): prices = json.loads(prices)
+        zc = (prices or {}).get("zcmd")
+        if zc is None: return []
+        o = store_offer("teta", "Teta", code, name, amount,
+                        f"https://www.tetadrogerie.cz/vyhledavani?q={code}", zc / 100, ean=ean)
+        out = [o]
+        ac, cl = prices.get("acmd"), prices.get("club")
+        if ac is not None and ac < zc:
+            out.append(extra_price(o, ac / 100, "akce", note=prices.get("conditions") or None, promo=True))
+        if cl is not None and cl < zc:
+            out.append(extra_price(o, cl / 100, "club", club="Teta club", promo=True))
+        return out
+
+    def search(self, query, n=12):
+        cands = []
+        for h in luigi(self.TRACKER, query, n, ["type:product_variant"]):
+            a = h.get("attributes") or {}
+            code, eans = (a.get("code") or [None])[0], a.get("ean") or []
+            if not code or (is_ean(query) and query.strip() not in eans): continue
+            size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", a.get("title", ""), re.I)
+            offs = self._offers(code, a.get("title", ""), a.get("prices") or "{}",
+                                eans[0] if eans else None, size[1] if size else "")
+            if offs: cands.append(dict(ref=code, name=offs[0]["name"], url=offs[0]["url"], offers=offs))
+        return cands
+
+    def fetch(self, refs):
+        out = {}
+        for i, code in enumerate(refs):
+            if i: time.sleep(1.0)
+            try:
+                d = http_get(self.BE + str(code).zfill(18), None,
+                             {"User-Agent": BROWSER_UA, "Accept": "application/ld+json"})
+            except Exception as e:
+                print(f"  [teta] {code}: {e}"); continue
+            size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", d.get("name", ""), re.I)
+            offs = self._offers(code, d.get("name", ""), d.get("bbyPrices") or {},
+                                amount=size[1] if size else "")
+            if offs: out[code] = offs
+        return out
+
+    def ref_of(self, store_ref): return store_ref
+
 # Heureka: not wired yet. Each needs the live-inspect treatment Rohlík and Kupi got
 # before it gets a search()/fetch() adapter. Makro: needs MAKRO_COOKIE, shows bez DPH ->
 # add product.vat_pct back.
 
-SOURCES = {"globus": Globus, "kosik": Kosik, "dm": Dm, "makro": Makro, "rohlik": Rohlik,
-           "kupi": Kupi}
+SOURCES = {"globus": Globus, "kosik": Kosik, "tesco": Tesco, "billa": Billa, "dm": Dm,
+           "rossmann": Rossmann, "teta": Teta, "makro": Makro, "rohlik": Rohlik, "kupi": Kupi}
 
 def source(name):
     if name not in SOURCES:
@@ -884,13 +1101,15 @@ def suggest(product_id):
     if not p or not p["ean"]: return []
     out = []
     for name, cls in SOURCES.items():
-        if not getattr(cls, "ean_search", False): continue
+        by_name = getattr(cls, "ean_via_name", False)  # no EAN search, but results carry the EAN
+        if not (getattr(cls, "ean_search", False) or by_name): continue
         try:
-            cands = cls().search(p["ean"])
+            cands = cls().search(default_query(p["name"]) if by_name else p["ean"])
         except Exception as e:
             print(f"  [suggest {name}] {e}"); continue
         for cd in cands:
             eans = {o.get("ean") for o in cd["offers"]} | ({cd["ref"]} if name == "makro" else set())
+            eans |= {e for o in cd["offers"] for e in o.get("eans") or []}
             if name != "kosik" and p["ean"] not in eans: continue  # exact barcode only
             if (name, cd["ref"]) in linked: continue
             out.append(dict(cd, source=name))

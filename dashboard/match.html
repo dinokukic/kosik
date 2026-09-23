@@ -62,7 +62,8 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const CZK = n => n.toLocaleString("cs-CZ",{minimumFractionDigits:2,maximumFractionDigits:2}) + " Kč";
 const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
-const SRC = {kupi:"Kupi flyers", rohlik:"Rohlík", makro:"Makro", globus:"Globus", kosik:"Košík.cz", dm:"dm"};
+const SRC = {kupi:"Kupi flyers", rohlik:"Rohlík", makro:"Makro", globus:"Globus", kosik:"Košík.cz", dm:"dm",
+             tesco:"Tesco", billa:"Billa", rossmann:"Rossmann", teta:"Teta"};
 let PRODUCTS = [], SOURCES = [];
 const ui = {};   // per product id: {source, query, results, busy, msg}
 
@@ -78,7 +79,7 @@ async function load(){
   try{
     const d = await api("products");
     PRODUCTS = d.products;
-    const order = ["globus", "kosik", "dm", "makro", "rohlik", "kupi"];  // stores first, flyers last
+    const order = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik", "kupi"];
     SOURCES = [...d.sources].sort((a,b)=>(order.indexOf(a)+99)%99-(order.indexOf(b)+99)%99);
     fillCats();
     render();
@@ -147,7 +148,7 @@ async function findByBarcode(pid){
 function suggestBlock(pid){
   const st = state(pid);
   if(st.suggest===undefined) return "";
-  if(st.suggest===null) return `<p class="status">Looking the barcode up at Globus, Košík.cz, dm and Makro…</p>`;
+  if(st.suggest===null) return `<p class="status">Looking the barcode up at every store that knows barcodes…</p>`;
   if(!st.suggest.length) return `<p class="status">No new barcode matches. Search by name below.</p>`;
   return `<div class="suggest"><div class="sh">Found by barcode
       <button class="btn" data-linkall ${st.busy?'disabled':''}>Link all ${st.suggest.length}</button></div>

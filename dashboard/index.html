@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Košík — price tracker</title>
+<style>
+  :root{
+    --ink:#1b1a17; --paper:#faf7f0; --line:#e4ddce; --muted:#8a8272;
+    --win:#3f7d4e; --winbg:#eaf3ea;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0); padding-bottom:env(safe-area-inset-bottom,0);
+  }
+  *{box-sizing:inherit}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --ink:#ece7db; --paper:#16150f; --line:#332f24; --muted:#9a917d; --winbg:#17251a;
+  }}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"Iowan Old Style",Palatino,"Palatino Linotype",Georgia,serif;line-height:1.4}
+  .wrap{max-width:940px;margin:0 auto;padding:clamp(1.1rem,4vw,2.4rem)}
+  header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem 2rem;
+    border-bottom:2px solid var(--ink);padding-bottom:1rem;margin-bottom:.4rem}
+  h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0;letter-spacing:-.01em;font-weight:600}
+  h1 small{display:block;font-size:.42em;letter-spacing:.02em;color:var(--muted);
+    font-weight:400;font-style:italic;margin-top:.3em}
+  .headline{margin-left:auto;text-align:right}
+  .headline .num{font-size:clamp(2rem,7vw,3.1rem);font-weight:600;color:var(--win);
+    font-variant-numeric:tabular-nums;line-height:1}
+  .headline .lbl{font-size:.8rem;color:var(--muted);font-style:italic}
+  .meta{color:var(--muted);font-size:.8rem;font-style:italic;margin:.6rem 0 1.6rem}
+  .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.4rem}
+  .filters button{font:inherit;font-size:.82rem;padding:.28rem .8rem;cursor:pointer;
+    background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:2rem}
+  .filters button[aria-pressed=true]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .row{display:grid;grid-template-columns:1fr auto auto;gap:.3rem 1.1rem;align-items:baseline;
+    padding:.7rem 0;border-bottom:1px solid var(--line)}
+  .row .nm{font-size:1.02rem}
+  .row .pack{color:var(--muted);font-size:.74rem;font-style:italic}
+  .row .best{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .row .best b{font-size:1.12rem;font-weight:600}
+  .row .where{font-size:.76rem;color:var(--muted)}
+  .win .best b{color:var(--win)}
+  .pill{display:inline-block;font-size:.62rem;padding:.05rem .4rem;border-radius:1rem;
+    background:var(--winbg);color:var(--win);vertical-align:.12em;margin-left:.35rem;font-style:normal}
+  .save{text-align:right;font-variant-numeric:tabular-nums;font-size:.86rem;min-width:4.6rem}
+  .save.pos{color:var(--win)} .save.zero{color:var(--muted)}
+  .save .a30{display:block;font-size:.66rem;color:var(--muted);font-style:italic}
+  details.item{border-bottom:1px solid var(--line)}
+  details.item>summary{list-style:none;cursor:pointer}
+  details.item>summary::-webkit-details-marker{display:none}
+  .expand{padding:.2rem 0 .8rem;display:flex;flex-wrap:wrap;gap:.35rem}
+  .q{font-size:.76rem;padding:.2rem .6rem;border:1px solid var(--line);border-radius:.4rem;
+    font-variant-numeric:tabular-nums}
+  .q.pr{background:var(--winbg);border-color:var(--win);color:var(--win)}
+  .loader{border:1px dashed var(--line);border-radius:.6rem;padding:1.4rem;text-align:center;
+    color:var(--muted);font-style:italic}
+  .loader label{color:var(--ink);text-decoration:underline;cursor:pointer;font-style:normal}
+  .note{margin-top:2rem;color:var(--muted);font-size:.76rem;font-style:italic;
+    border-top:1px solid var(--line);padding-top:1rem}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Košík<small>cheapest source per item, checked against its 30-day average</small></h1>
+    <div class="headline"><div class="num" id="saveNum">–</div>
+      <div class="lbl">below the 30-day average this week</div></div>
+  </header>
+  <div class="meta" id="meta"></div>
+  <div class="filters" id="filters"></div>
+  <div id="list"></div>
+  <p class="note" id="note"></p>
+</div>
+<script>
+const CZK = n => Math.round(n).toLocaleString("cs-CZ") + " Kč";
+let DATA=null, CAT="all";
+
+function apply(d){
+  DATA=d;
+  document.getElementById("saveNum").textContent = CZK(d.basket_saving_vs_avg);
+  document.getElementById("meta").textContent =
+    "Updated " + d.generated.replace("T"," ") + " · " + d.items.length + " tracked items";
+  buildFilters(); render();
+  document.getElementById("note").innerHTML =
+    "Best = cheapest source seen today. vs avg = the item's 30-day average across all stores minus today's best "
+    + "(green means today beats the typical price). Promo prices (green tag) can be time-limited — check the flyer first.";
+}
+async function load(){
+  try{
+    const d = await (await fetch("prices.json?"+Date.now())).json();
+    apply(d);
+  }catch(e){
+    // Opened via file:// — fetch is blocked. Offer manual load.
+    document.getElementById("list").innerHTML =
+      `<div class="loader">Opened as a local file, so the browser won't auto-load the data.<br>
+       <label>Choose prices.json<input id="fp" type="file" accept="application/json" hidden></label>
+       &nbsp;— or serve it: <code>cd dashboard &amp;&amp; python3 -m http.server</code> then open localhost:8000</div>`;
+    document.getElementById("fp").onchange = ev=>{
+      const f=ev.target.files[0]; if(!f) return;
+      const r=new FileReader(); r.onload=()=>{ try{apply(JSON.parse(r.result));}catch(_){ } }; r.readAsText(f);
+    };
+  }
+}
+function buildFilters(){
+  const cats=["all",...new Set(DATA.items.map(i=>i.category))];
+  document.getElementById("filters").innerHTML = cats.map(c=>
+    `<button data-c="${c}" aria-pressed="${c===CAT}">${c}</button>`).join("");
+  document.querySelectorAll("#filters button").forEach(b=>b.onclick=()=>{
+    CAT=b.dataset.c; buildFilters(); render();});
+}
+function render(){
+  const items = DATA.items.filter(i=>CAT==="all"||i.category===CAT)
+     .sort((a,b)=>b.saving_vs_avg-a.saving_vs_avg);
+  document.getElementById("list").innerHTML = items.map(i=>{
+    const win = i.saving_vs_avg>0;
+    const quotes=(i.all_today||[]).map(q=>
+      `<span class="q ${q.promo?'pr':''}">${q.source} ${CZK(q.price)}${q.promo?' ·akce':''}</span>`).join("");
+    return `<details class="item ${win?'win':''}"><summary>
+      <div class="row ${win?'win':''}">
+        <div><div class="nm">${i.name}${i.best_is_promo&&win?'<span class="pill">akce</span>':''}</div>
+          <div class="pack">${i.pack_note||i.category}</div></div>
+        <div class="best"><b>${CZK(i.best_price)}</b><div class="where">${i.best_source}</div></div>
+        <div class="save ${win?'pos':'zero'}">${win?'−'+CZK(i.saving_vs_avg):'at avg'}
+          <span class="a30">ø30 ${CZK(i.avg30)}</span></div>
+      </div></summary>
+      <div class="expand">${quotes||'<span class="q">one source so far</span>'}</div>
+    </details>`;
+  }).join("");
+}
+load();
+</script>
+</body>
+</html>

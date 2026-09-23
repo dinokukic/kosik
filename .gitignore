@@ -1,0 +1,17 @@
+# secrets — never commit
+.env
+.env.*
+.bunny/
+*.token
+
+# local db & build
+prices.db
+dashboard/prices.json
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.DS_Store
+
+# npm
+package-lock.json

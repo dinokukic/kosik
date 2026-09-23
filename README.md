@@ -10,12 +10,12 @@ verified Rohlík API, Bunny architecture). Start there.
 ## Layout
 ```
 watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, units)
-pricetrack.py          local SQLite tool: init | seed | search | match | fetch | need | matrix | export
+pricetrack.py          the tool (Bunny Database): init | seed | search | match | fetch | crawl | serve | ...
 dashboard/index.html   store matrix: price per unit, cheapest per row marked
 dashboard/match.html   match screen: pick each item's product per source (needs `serve`)
 dashboard/style.css    shared styles
 bunny/
-  schema.sql           three-layer schema + views, shared by local SQLite and Bunny
+  schema.sql           three-layer schema + views (Bunny; same SQL works locally)
   seed.mjs             load schema + stores + products into Bunny (auto-loads .env)
   rohlik_probe.py      standalone, VERIFIED live Rohlík price puller
 requirements.txt       requests
@@ -23,7 +23,9 @@ package.json           @bunny.net/database-client (for bunny/seed.mjs)
 .env                   Bunny creds (gitignored — never commit)
 ```
 
-## Quick start (local SQLite)
+## Quick start
+Needs `.env` with `BUNNY_DATABASE_URL`, `BUNNY_DATABASE_AUTH_TOKEN` and `TESCO_XAPI_KEY`.
+`PRICETRACK_DB=local` runs against a local `prices.db` instead.
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
@@ -61,8 +63,8 @@ python bunny/rohlik_probe.py "pampers premium care 1"
 - Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.
 - Schema: three layers (need / product / offering + price history) built.
 - Dashboard: matrix built; basket-by-store view next.
-- Storage: local SQLite works; Bunny Database `kosik` seeded with the three-layer schema.
+- Storage: **Bunny Database `kosik`** is the database; `prices.db` is a local fallback.
 
 ## Do NOT commit
-`.env`, `.bunny/`, `prices.db`, `node_modules/`. All gitignored. If the DB token ever
+`.env`, `.bunny/`, `prices*.db`, `node_modules/`. All gitignored. If the DB token ever
 leaks, rotate it in the Bunny dashboard.

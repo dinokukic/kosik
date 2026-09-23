@@ -61,9 +61,118 @@ STORES = [  # id, name, url, prices_ex_vat
     ("heureka", "Heureka (min)", "https://www.heureka.cz", 0),
 ]
 
+# ---------------------------------------------------------------- database
+# Bunny Database (libSQL over HTTP) is the database; prices.db is only a local fallback
+# (PRICETRACK_DB=local). BunnyConn mimics the bit of sqlite3's connection API this file
+# uses, so every function works on either backend.
+
+class Row:
+    """sqlite3.Row look-alike: row["col"], row[0], dict(row), row.keys()."""
+    __slots__ = ("_cols", "_vals")
+    def __init__(self, cols, vals): self._cols, self._vals = cols, vals
+    def keys(self): return list(self._cols)
+    def __getitem__(self, k): return self._vals[k] if isinstance(k, int) else self._vals[self._cols.index(k)]
+    def __iter__(self): return iter(self._vals)
+    def __len__(self): return len(self._vals)
+    def __repr__(self): return f"Row({dict(zip(self._cols, self._vals))})"
+
+class Cursor:
+    def __init__(self, rows=(), rowcount=0, lastrowid=None):
+        self._rows, self.rowcount, self.lastrowid = list(rows), rowcount, lastrowid
+    def fetchone(self): return self._rows[0] if self._rows else None
+    def fetchall(self): return list(self._rows)
+    def __iter__(self): return iter(self._rows)
+
+class BunnyConn:
+    """Stateless: every call is one POST to /v2/pipeline (keep-alive session per thread).
+    Multi-statement writes go as one `batch` inside BEGIN/COMMIT. Foreign keys are on."""
+    CHUNK = 300  # statements per batch request
+    _local = __import__("threading").local()
+
+    def __init__(self):
+        self.url = os.environ["BUNNY_DATABASE_URL"].replace("libsql://", "https://").rstrip("/") + "/v2/pipeline"
+        self.token = os.environ["BUNNY_DATABASE_AUTH_TOKEN"]
+
+    def _session(self):
+        import requests
+        s = getattr(self._local, "s", None)
+        if s is None:
+            s = self._local.s = requests.Session()
+            s.headers.update({"Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                              "User-Agent": UA})
+        return s
+
+    @staticmethod
+    def _arg(v):
+        if v is None: return {"type": "null"}
+        if isinstance(v, bool): return {"type": "integer", "value": str(int(v))}
+        if isinstance(v, int): return {"type": "integer", "value": str(v)}
+        if isinstance(v, float): return {"type": "float", "value": v}
+        return {"type": "text", "value": str(v)}
+
+    @staticmethod
+    def _val(v):
+        t = v["type"]
+        return None if t == "null" else int(v["value"]) if t == "integer" else v.get("value")
+
+    @staticmethod
+    def _raise(err):
+        msg = (err or {}).get("message", "database error")
+        if "constraint" in msg.lower(): raise sqlite3.IntegrityError(msg)
+        raise sqlite3.OperationalError(msg)
+
+    def _send(self, requests_):
+        r = self._session().post(self.url, json={"baton": None, "requests": [*requests_, {"type": "close"}]},
+                                 timeout=60)
+        if r.status_code != 200: raise sqlite3.OperationalError(f"Bunny DB HTTP {r.status_code}: {r.text[:200]}")
+        res = r.json()["results"][0]
+        if res.get("type") == "error": self._raise(res.get("error"))
+        return res["response"]
+
+    def _stmt(self, sql, params=()):
+        return {"sql": sql, "args": [self._arg(p) for p in params], "want_rows": True}
+
+    def _cursor(self, result):
+        cols = [c.get("name") for c in result.get("cols", [])]
+        rows = [Row(cols, [self._val(v) for v in row]) for row in result.get("rows", [])]
+        lid = result.get("last_insert_rowid")
+        return Cursor(rows, result.get("affected_row_count", 0), int(lid) if lid is not None else None)
+
+    def execute(self, sql, params=()):
+        return self._cursor(self._send([{"type": "execute", "stmt": self._stmt(sql, params)}])["result"])
+
+    def batch(self, stmts):
+        """[(sql, params)] in one transaction per CHUNK statements."""
+        stmts = list(stmts)
+        for i in range(0, len(stmts), self.CHUNK):
+            part = stmts[i:i + self.CHUNK]
+            ok = lambda step: {"type": "ok", "step": step}
+            steps = [{"stmt": {"sql": "BEGIN", "args": [], "want_rows": False}}]
+            steps += [{"stmt": self._stmt(q, p), "condition": ok(j)} for j, (q, p) in enumerate(part)]
+            steps += [{"stmt": {"sql": "COMMIT", "args": [], "want_rows": False}, "condition": ok(len(part))},
+                      {"stmt": {"sql": "ROLLBACK", "args": [], "want_rows": False},
+                       "condition": {"type": "not", "cond": ok(len(part) + 1)}}]
+            res = self._send([{"type": "batch", "batch": {"steps": steps}}])["result"]
+            errs = [e for e in res.get("step_errors", []) if e]
+            if errs: self._raise(errs[0])
+
+    def executemany(self, sql, seq): self.batch((sql, p) for p in seq)
+
+    def executescript(self, script):
+        self._send([{"type": "sequence", "sql": script}])
+
+    def commit(self): pass
+    def close(self): pass
+
+def use_bunny():
+    if os.environ.get("PRICETRACK_DB", "").lower() == "local": return False
+    return bool(os.environ.get("BUNNY_DATABASE_URL") and os.environ.get("BUNNY_DATABASE_AUTH_TOKEN"))
+
 def conn():
+    if use_bunny(): return BunnyConn()
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON"); return c
+
 
 def today(): return dt.date.today().isoformat()
 
@@ -110,6 +219,32 @@ def record(c, offering_id, price_incl, is_promo=False, promo_until=None, ts=None
                  VALUES (?,?,?,?,?,?,?,?,?)""",
               (offering_id, ts, str(ref), round(price_incl, 2), int(bool(is_promo)),
                valid_from or ts, promo_until, club, note))
+
+# ---------------------------------------------------------------- one-time move to Bunny
+MIGRATE_TABLES = ["store", "need", "product", "watch", "offering", "price", "deal", "crawl_log"]
+
+def migrate_to_bunny():
+    """Copy the local prices.db into Bunny Database, ids preserved. Bunny's own rows (only the
+    original seed so far) are replaced. prices.db is left untouched as a fallback."""
+    if not use_bunny(): raise SystemExit("Bunny creds missing in .env (or PRICETRACK_DB=local)")
+    src = sqlite3.connect(DB); src.row_factory = sqlite3.Row
+    dst = BunnyConn()
+    dst.executescript(SCHEMA.read_text(encoding="utf-8"))
+    if "packs" not in [r["name"] for r in dst.execute("PRAGMA table_info(watch)")]:
+        dst.execute("ALTER TABLE watch ADD COLUMN packs TEXT")
+    dst.batch([(f"DELETE FROM {t}", ()) for t in reversed(MIGRATE_TABLES)])
+    for t in MIGRATE_TABLES:
+        rows = src.execute(f"SELECT * FROM {t}").fetchall()
+        if not rows: print(f"  {t:10} 0"); continue
+        cols = rows[0].keys()
+        t0 = time.time()
+        dst.executemany(f"INSERT INTO {t} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                        [tuple(r) for r in rows])
+        print(f"  {t:10} {len(rows):6}  ({time.time() - t0:.1f} s)")
+    bad = [(t, a, b) for t in MIGRATE_TABLES
+           for a, b in [(src.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0],
+                         dst.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])] if a != b]
+    print("migrate ok: row counts match" if not bad else f"MISMATCH: {bad}")
 
 # ---------------------------------------------------------------- init / seed
 def init():
@@ -851,9 +986,9 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
     """Create/refresh an offering per (store, store_ref) and record each offer as a price row.
     unit_qty comes from the pack amount when it's in the row's unit; `qty` forces it."""
     target = product or need
-    for o in offers:
+    for i, o in enumerate(offers):
         if o.get("price_net") is not None and product is not None and product["vat_pct"]:
-            o = dict(o, price_incl=round(o["price_net"] * (1 + product["vat_pct"] / 100), 2))
+            o = offers[i] = dict(o, price_incl=round(o["price_net"] * (1 + product["vat_pct"] / 100), 2))
         unit, guess = infer_unit(f"{o['name']} {o['amount']}", target["category"] if target else None)
         q = qty if qty is not None else (guess if target and unit == target["unit"] else None)
         if product is not None and q is not None and abs(q - product["unit_qty"]) < 1e-9:
@@ -870,12 +1005,19 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
                          AND product_id=?""", (o["store_id"], product["id"]))
 
 def save_deals(c, offers, seen=None):
-    """Upsert Kupi flyer offers into the deal table (the flyer layer)."""
+    """Upsert Kupi flyer offers into the deal table (the flyer layer). Batched: a crawl
+    writes ~11k rows, which must not be one round trip each on Bunny."""
     seen = seen or today()
+    stores, rows = {}, []
     for o in offers:
         unit, qty = infer_unit(f"{o.get('product', '')} {o['amount']}", None)
-        c.execute("INSERT OR IGNORE INTO store(id,name) VALUES (?,?)", (o["store_id"], o["store_name"]))
-        c.execute("""INSERT INTO deal(ref,slug,product_name,store_id,store_name,pack_key,amount,unit,
+        stores[o["store_id"]] = o["store_name"]
+        rows.append((o["ref"], o["slug"], o.get("product"), o["store_id"], o["store_name"],
+                     o.get("key"), o["amount"], unit, qty if unit != "pack" else None,
+                     o["price_incl"], o["valid_from"], o["promo_until"], o["club"], o["note"],
+                     seen, seen))
+    c.executemany("INSERT OR IGNORE INTO store(id,name) VALUES (?,?)", list(stores.items()))
+    c.executemany("""INSERT INTO deal(ref,slug,product_name,store_id,store_name,pack_key,amount,unit,
                                       unit_qty,price_incl,valid_from,valid_to,club,note,
                                       first_seen,last_seen)
                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -883,11 +1025,7 @@ def save_deals(c, offers, seen=None):
                        valid_from=excluded.valid_from, valid_to=excluded.valid_to,
                        club=excluded.club, note=excluded.note, amount=excluded.amount,
                        unit=excluded.unit, unit_qty=excluded.unit_qty,
-                       last_seen=excluded.last_seen""",
-                  (o["ref"], o["slug"], o.get("product"), o["store_id"], o["store_name"],
-                   o.get("key"), o["amount"], unit, qty if unit != "pack" else None,
-                   o["price_incl"], o["valid_from"], o["promo_until"], o["club"], o["note"],
-                   seen, seen))
+                       last_seen=excluded.last_seen""", rows)
 
 def crawl(chains=None):
     """Weekly Kupi crawl: every current flyer offer of the tracked chains, then the product
@@ -1359,7 +1497,7 @@ def serve(port):
 def main():
     ap = argparse.ArgumentParser(description="Košík price tracker")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("init", "seed", "matrix", "export"): sub.add_parser(name)
+    for name in ("init", "seed", "matrix", "export", "migrate-to-bunny"): sub.add_parser(name)
     sv = sub.add_parser("serve", help="local dashboard + match screen")
     sv.add_argument("--port", type=int, default=8765)
     s = sub.add_parser("search"); s.add_argument("source", choices=list(SOURCES))
@@ -1394,6 +1532,7 @@ def main():
     elif a.cmd == "fetch": fetch(a.source.split(",") if a.source else None)
     elif a.cmd == "matrix": matrix()
     elif a.cmd == "export": export()
+    elif a.cmd == "migrate-to-bunny": migrate_to_bunny()
     elif a.cmd == "serve": serve(a.port)
     elif a.cmd == "need" and a.ncmd == "add": need_add(a.name, a.unit, a.category)
     elif a.cmd == "need" and a.ncmd == "link": need_link(a.name, a.eans, a.offering)

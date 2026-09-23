@@ -5,12 +5,18 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
 **Personal use only** — not a product. Never redistribute scraped prices.
 
 ## Current state (what works, what's stubbed)
-- **Watchlist** (`watchlist.csv`, 32 items) seeded from a real Makro receipt with
-  EANs, VAT %, pack notes, and explicit `unit`/`unit_qty`. Source of truth for products.
-- **Schema: three layers BUILT** (`bunny/schema.sql`, shared by local SQLite and Bunny):
+- **DATABASE = Bunny Database (since 2026-09-23).** `pricetrack.py` talks to it directly
+  over libSQL HTTP (`BunnyConn`: POST `<db>/v2/pipeline`, Bearer token from `.env`; bulk
+  writes go as `batch` in BEGIN/COMMIT, 300 statements a request). All reads/writes, the
+  server, fetch and crawl use Bunny. `prices.db` is only a fallback (`PRICETRACK_DB=local`);
+  local data was copied up once with `migrate-to-bunny` (backup: `prices.backup-*.db`).
+  Latency ~15-20 ms a call; matrix ~0.3 s.
+- **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
+  VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
+- **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):
   `store`, `need`, `product`, `offering`, `price`, plus views `v_offer` (resolved
   need/unit + latest price) and `v_matrix` (one cell per row×store, `is_cheapest`).
-  Bunny DB is seeded with it (16 stores, 32 products); old `item`/`quote` tables dropped.
+  `python3 pricetrack.py init` applies it (idempotent) to whichever backend is active.
 - **Local server** (`python3 pricetrack.py serve` → localhost:8765, 127.0.0.1 only):
   matrix at `/`, **match screen at `/match.html`** (search Kupi/Rohlík per item, pick,
   remove, pack-size picker, refresh all). JSON API under `/api/` (matrix, products,
@@ -161,8 +167,10 @@ Cache each store's product id per item (match once).
 - `npm i -g @bunny.net/cli && bunny login`
 - `bunny db create --name kosik --token --save-env` → writes `.env`
   (`BUNNY_DATABASE_URL`, `BUNNY_DATABASE_AUTH_TOKEN`). `.env` is gitignored.
-- `node bunny/seed.mjs` (auto-loads `.env`; also `node --env-file=.env`) loads schema+items.
-- Client: `@bunny.net/database-client` (`connect()` reads the two env vars). SQLite dialect.
+- `python3 pricetrack.py init` applies schema + stores + watchlist to Bunny (`node
+  bunny/seed.mjs` does the same from Node). JS client for Edge Scripts:
+  `@bunny.net/database-client` (`connect()` reads the two env vars). SQLite dialect.
+- The current token is a development token — rotate it when the build is done.
 
 ## Target architecture (end state)
 - **Pull job** = a Bunny **Edge Script** (TS) that fetches prices and writes `offering`

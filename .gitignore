@@ -5,7 +5,7 @@
 *.token
 
 # local db & build
-prices.db
+prices*.db
 dashboard/prices.json
 node_modules/
 __pycache__/

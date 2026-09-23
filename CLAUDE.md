@@ -10,8 +10,7 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
 - **Schema: three layers BUILT** (`bunny/schema.sql`, shared by local SQLite and Bunny):
   `store`, `need`, `product`, `offering`, `price`, plus views `v_offer` (resolved
   need/unit + latest price) and `v_matrix` (one cell per row×store, `is_cheapest`).
-  Bunny DB is seeded with it (16 stores, 32 products). The OLD `item`/`quote` tables are
-  still there, unused — safe to drop.
+  Bunny DB is seeded with it (16 stores, 32 products); old `item`/`quote` tables dropped.
 - **CLI** (`pricetrack.py`): `init`, `seed`, `search <source>`, `match <source>` (to a
   product by EAN or to a need with `--need`), `fetch` (by cached id), `need add|link`,
   `store member <chain> on|off`, `matrix`, `export`.

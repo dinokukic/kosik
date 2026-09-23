@@ -72,13 +72,14 @@ def infer_unit(name, category):
     """Price-per-obvious-unit, kept simple: kg for weights, l for volumes,
     roll/egg/piece for counts. Returns (unit, unit_qty); ('pack', 1) if unsure."""
     n = name.lower().replace(",", ".")
-    if m := re.search(r"(\d+)\s*(?:ks|pcs)\b", n):  # a count beats a size (bags: 60L 15ks)
+    if m := re.search(r"(\d+)\s*(?:ks|pcs|kusů|plenek|rolí|role)\b", n):  # a count beats a size (bags: 60L 15ks)
         q = int(m[1])
         if re.search(r"\btp\b|toalet|utěrk|rolí", n): return "roll", q
         if "vejce" in n: return "egg", q
         return "piece", q
-    if m := re.search(r"(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*g\b", n):
-        return "kg", int(m[1]) * float(m[2]) / 1000
+    if m := re.search(r"(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*(kg|g|ml|l)\b", n):  # multipack: 6 x 1,5 l
+        k = int(m[1]) * float(m[2])
+        return {"kg": ("kg", k), "g": ("kg", k / 1000), "ml": ("l", k / 1000), "l": ("l", k)}[m[3]]
     if m := re.search(r"(\d+(?:\.\d+)?)\s*kg\b", n): return "kg", float(m[1])
     if m := re.search(r"(\d+(?:\.\d+)?)\s*g\b", n): return "kg", float(m[1]) / 1000
     if m := re.search(r"(\d+(?:\.\d+)?)\s*ml\b", n): return "l", float(m[1]) / 1000
@@ -451,6 +452,16 @@ def store_offer(store_id, store_name, ref, name, amount, url, price, regular=Non
                 valid_from=None, promo_until=until if promo else None, club=None,
                 note=note if promo else None, ref="", ean=str(ean) if ean else None)
 
+def pack_size(title):
+    """Pack size from a product title: a piece count wins ('72 Plenek', '16 ks'), then
+    'N x size', then weight/volume; ranges like '2kg-5kg' / '2–5 kg' (diaper sizes) are skipped."""
+    t = re.sub(r"\d+(?:[.,]\d+)?\s*(?:kg|g)?\s*[-–]\s*\d+(?:[.,]\d+)?\s*(?:kg|g)\b", " ", title or "", flags=re.I)
+    for pat in (r"(\d+)\s*(?:ks|kusů|plenek|rolí|role)\b", r"(\d+\s*x\s*\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l))\b",
+                r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l))\b"):
+        m = re.search(pat, t, re.I)
+        if m: return m[0].strip()
+    return ""
+
 def is_ean(q): return bool(re.fullmatch(r"\d{8,14}", (q or "").strip()))
 
 class Globus:
@@ -625,7 +636,6 @@ class Tesco:
 
     def _offers(self, n):
         if not n or not n.get("price") or n["price"].get("actual") is None: return []
-        size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:x\s*\d+(?:[.,]\d+)?\s*)?(?:kg|g|ml|l|ks)\b)", n["title"], re.I)
         regular, until, club = None, None, None
         for pr in n.get("promotions") or []:
             if "CLUBCARD_PRICING" in (pr.get("attributes") or []):
@@ -635,7 +645,7 @@ class Tesco:
             elif (pr.get("price") or {}).get("beforeDiscount"):
                 regular = pr["price"]["beforeDiscount"]; until = (pr.get("endDate") or "")[:10] or None
         gtin = (n.get("gtin") or "").lstrip("0") or None
-        o = store_offer("tesco", "Tesco", n["id"], n["title"], size[1] if size else "",
+        o = store_offer("tesco", "Tesco", n["id"], n["title"], pack_size(n["title"]),
                         f"https://nakup.itesco.cz/groceries/cs-CZ/products/{n['id']}",
                         n["price"]["actual"], regular, until, ean=gtin)
         out = [o]
@@ -724,10 +734,9 @@ class Rossmann:
         ids = a.get("id_erp") or []
         if reg is None or not ids: return []
         eans = [e.lstrip("0") for e in a.get("id_ean") or []]
-        size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", a.get("title", ""), re.I)
         o = store_offer("rossmann", "Rossmann", ids[0],
                         f"{(a.get('PRODUCER') or [''])[0]} {a.get('title', '')}".strip(),
-                        size[1] if size else "", f"https://www.rossmann.cz/vyhledavani?q={ids[0]}",
+                        pack_size(a.get("title", "")), f"https://www.rossmann.cz/vyhledavani?q={ids[0]}",
                         reg, ean=eans[0] if eans else None)
         o["eans"] = eans
         out = [o]
@@ -784,9 +793,8 @@ class Teta:
             a = h.get("attributes") or {}
             code, eans = (a.get("code") or [None])[0], a.get("ean") or []
             if not code or (is_ean(query) and query.strip() not in eans): continue
-            size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", a.get("title", ""), re.I)
             offs = self._offers(code, a.get("title", ""), a.get("prices") or "{}",
-                                eans[0] if eans else None, size[1] if size else "")
+                                eans[0] if eans else None, pack_size(a.get("title", "")))
             if offs: cands.append(dict(ref=code, name=offs[0]["name"], url=offs[0]["url"], offers=offs))
         return cands
 
@@ -799,9 +807,8 @@ class Teta:
                              {"User-Agent": BROWSER_UA, "Accept": "application/ld+json"})
             except Exception as e:
                 print(f"  [teta] {code}: {e}"); continue
-            size = re.search(r"(\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|ks)\b)", d.get("name", ""), re.I)
             offs = self._offers(code, d.get("name", ""), d.get("bbyPrices") or {},
-                                amount=size[1] if size else "")
+                                amount=pack_size(d.get("name", "")))
             if offs: out[code] = offs
         return out
 

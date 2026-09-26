@@ -1111,6 +1111,14 @@ def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None, product
             c.commit()
             keep = set(packs.split(",")) if packs else None
             return [o for o in offers if not keep or not o.get("key") or o["key"] in keep]
+        if product is not None:  # a listing belongs to one item: refuse to silently move it
+            for o in offers:
+                owner = c.execute("""SELECT p.name FROM offering o JOIN product p ON p.id = o.product_id
+                                     WHERE o.store_id=? AND o.store_ref=? AND o.product_id != ?""",
+                                  (o["store_id"], o["store_ref"], product["id"])).fetchone()
+                if owner:
+                    raise ValueError(f"This {o['store_name']} listing already belongs to “{owner['name']}”. "
+                                     "Unlink it there first, or group both items under one need.")
         save_offers(c, src, offers, product, need_row, qty)
         retire_missing(c, src, ref, product, need_row, [o["store_ref"] for o in offers])
         c.commit()

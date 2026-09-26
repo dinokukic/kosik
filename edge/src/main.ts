@@ -3,6 +3,7 @@ import * as BunnySDK from "@bunny.net/edgescript-sdk";
 import { checkPassword, clearCookie, isAuthed, sessionCookie } from "./auth.ts";
 import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
+import { link, lookup, search, suggest } from "./match.ts";
 import { cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, productDelete,
   productUpdate, savedListDelete, savedListReuse, unlink } from "./write.ts";
 import { PAGES } from "./pages.gen.ts";
@@ -78,6 +79,12 @@ async function route(req: Request): Promise<Response> {
       case "/api/lists": return json({ lists: await savedLists() });
       case "/api/list": return json(await savedList(Number(url.searchParams.get("id"))));
       case "/api/crawl": case "/api/eans": return json({ running: false, log: "" });  // jobs run via Mikku
+      case "/api/search": {
+        const n = Math.max(1, Math.min(Number(url.searchParams.get("n") ?? 60), 150));
+        return json({ candidates: await search(url.searchParams.get("source") ?? "", url.searchParams.get("q") ?? "", n), n });
+      }
+      case "/api/suggest": return json({ results: await suggest(Number(url.searchParams.get("product_id"))) });
+      case "/api/lookup": return json({ results: await lookup(url.searchParams.get("q") ?? "") });
     }
   }
   if (req.method === "POST" && !(req.headers.get("content-type") ?? "").startsWith("application/json")) {
@@ -97,6 +104,7 @@ async function route(req: Request): Promise<Response> {
       case "/api/product/update": await productUpdate(a.id, a); return json({ ok: true });
       case "/api/product/delete": await productDelete(a.id); return json({ ok: true });
       case "/api/eans/dismiss": await eanDismiss(a.product_id); return json({ ok: true });
+      case "/api/link": return json({ ok: true, offers: await link(a.source, a.ref, a.product_id, a.name, a.packs, a.qty) });
       case "/api/unlink": return json({ ok: true, removed: await unlink(a.source, a.ref, a.product_id) });
     }
   }

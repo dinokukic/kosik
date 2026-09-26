@@ -433,7 +433,10 @@ async function pollJob(name, label){
   JOB_NAMES.forEach(n => $(n).disabled = d.running);
   if(d.running){
     JOB_SEEN_RUNNING[name] = true;
-    if(d.drive && d.run) drive(d.run, d.step + 1, label);
+    if(d.drive && d.run){
+      if(!DRIVING[d.run]) $("gstatus").textContent = `${label} (keep this page open)…`;
+      drive(d.run, d.step + 1, label);
+    }
     else $("gstatus").textContent = `${label}… ${last.trim()}`;
     return setTimeout(()=>pollJob(name, label), 4000);
   }
@@ -453,7 +456,7 @@ for(const name of JOB_NAMES){
     }catch(e){ $("gstatus").textContent = e.message; }
   };
 }
-pollJob("weekly", JOB_LABEL.weekly);
+pollJob("weekly", "Refreshing");  // picks up whatever run is going (and drives it if there is no Mikku)
 load();
 </script>
 </body>

@@ -3,6 +3,8 @@ import * as BunnySDK from "@bunny.net/edgescript-sdk";
 import { checkPassword, clearCookie, isAuthed, sessionCookie } from "./auth.ts";
 import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
+import { cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, productDelete,
+  productUpdate, savedListDelete, savedListReuse, unlink } from "./write.ts";
 import { PAGES } from "./pages.gen.ts";
 
 const SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik", "kupi"];
@@ -80,6 +82,23 @@ async function route(req: Request): Promise<Response> {
   }
   if (req.method === "POST" && !(req.headers.get("content-type") ?? "").startsWith("application/json")) {
     return json({ error: "json only" }, 415);  // a cross-site form can't send JSON without a preflight
+  }
+  if (req.method === "POST") {
+    // deno-lint-ignore no-explicit-any
+    const a: any = await req.json().catch(() => ({}));
+    switch (path) {
+      case "/api/cart/toggle": return json({ ok: true, in_cart: await cartToggle(a.row_key, a.store_id, a.kind ?? "store") });
+      case "/api/cart/update": await cartUpdate(a.id, a.qty, a.checked); return json({ ok: true });
+      case "/api/cart/remove": await cartRemove(a.id, !!a.checked_only, !!a.all); return json({ ok: true });
+      case "/api/cart/save": return json({ ok: true, id: await cartSave(a.name) });
+      case "/api/lists/reuse": return json({ ok: true, added: await savedListReuse(a.id) });
+      case "/api/lists/delete": await savedListDelete(a.id); return json({ ok: true });
+      case "/api/product": return json({ ok: true, id: await productAdd(a) });
+      case "/api/product/update": await productUpdate(a.id, a); return json({ ok: true });
+      case "/api/product/delete": await productDelete(a.id); return json({ ok: true });
+      case "/api/eans/dismiss": await eanDismiss(a.product_id); return json({ ok: true });
+      case "/api/unlink": return json({ ok: true, removed: await unlink(a.source, a.ref, a.product_id) });
+    }
   }
   return json({ error: `${req.method} ${path} is not on the edge yet` }, 501);
 }

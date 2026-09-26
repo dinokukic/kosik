@@ -19,6 +19,7 @@
       <option value="unmatched">unmatched first</option>
       <option value="barcode">barcode candidates first</option>
       <option value="list">as listed</option></select></label>
+    <button class="btn ghost" id="weekly" title="store prices, then every flyer, then barcodes: what the weekly job does">Refresh everything</button>
     <button class="btn ghost" id="refresh">Refresh store prices</button>
     <button class="btn ghost" id="crawl" title="every current flyer offer of the tracked chains; ~30 min">Crawl Kupi flyers</button>
     <button class="btn ghost" id="eans" title="for items without a barcode: search Globus + Tesco by name; ~15 min">Find barcodes</button>
@@ -404,28 +405,55 @@ $("addGo").onclick = async ()=>{
     if(el){ el.open = true; el.scrollIntoView({behavior:"smooth", block:"start"}); }
   }catch(e){ $("addStatus").textContent = e.message; $("addStatus").classList.add("err"); }
 };
-// Long jobs run in the server; poll their log. name = crawl | eans
-const JOB_SEEN_RUNNING = {};
+// Long jobs run in the server; poll their log. name = weekly | refresh | crawl | eans
+// With Mikku the edge chains the slices itself; without it (drive: true) this page runs them one
+// by one, and picks a run back up after a reload. Each step is claimed, so two tabs can't double up.
+const JOB_SEEN_RUNNING = {}, DRIVING = {};
+const JOB_NAMES = ["weekly", "refresh", "crawl", "eans"];
+async function drive(run, step, label){
+  if(DRIVING[run]) return; DRIVING[run] = true;
+  let fails = 0;
+  while(true){
+    try{
+      const r = await api("run/step", {run, step});
+      if(r.skipped || r.finished) break;          // someone else has it, or it's done
+      $("gstatus").textContent = `${label} (keep this page open)… ${(r.did || []).slice(-1)[0] || ""}`;
+      step++; fails = 0;
+    }catch(e){
+      if(++fails >= 4){ $("gstatus").textContent = `${label} stopped: ${e.message}`; break; }
+      await new Promise(res => setTimeout(res, 3000 * fails));
+    }
+  }
+  DRIVING[run] = false;
+}
 async function pollJob(name, label){
   const d = await api(name).catch(()=>null);
   if(!d) return;
   const last = d.log.trim().split("\n").pop() || "";
-  $(name).disabled = d.running;
-  if(d.running){ JOB_SEEN_RUNNING[name] = true; $("gstatus").textContent = `${label}… ${last.trim()}`;
-                 return setTimeout(()=>pollJob(name, label), 4000); }
+  JOB_NAMES.forEach(n => $(n).disabled = d.running);
+  if(d.running){
+    JOB_SEEN_RUNNING[name] = true;
+    if(d.drive && d.run) drive(d.run, d.step + 1, label);
+    else $("gstatus").textContent = `${label}… ${last.trim()}`;
+    return setTimeout(()=>pollJob(name, label), 4000);
+  }
   // reload only when the job finished while this page was open (not for an old finished run)
   if(JOB_SEEN_RUNNING[name] && /done/.test(last)){
     JOB_SEEN_RUNNING[name] = false; $("gstatus").textContent = last.trim(); reloadProducts(true);
   }
 }
-$("crawl").onclick = async ()=>{ await api("crawl", {}); pollJob("crawl", "Crawling Kupi"); };
-$("eans").onclick = async ()=>{ await api("eans", {}); pollJob("eans", "Finding barcodes"); };
-pollJob("crawl", "Crawling Kupi"); pollJob("eans", "Finding barcodes");
-$("refresh").onclick = async ()=>{  // a background run (the edge chains it via Mikku; locally it's immediate)
-  try{ const d = await api("refresh", {}); if(d.note) $("gstatus").textContent = d.note; pollJob("refresh", "Refreshing store prices"); }
-  catch(e){ $("gstatus").textContent = e.message; }
-};
-pollJob("refresh", "Refreshing store prices");
+const JOB_LABEL = { weekly: "Refreshing everything", refresh: "Refreshing store prices", crawl: "Crawling Kupi", eans: "Finding barcodes" };
+for(const name of JOB_NAMES){
+  $(name).onclick = async ()=>{
+    try{
+      const d = await api(name, {});
+      if(d.note) $("gstatus").textContent = d.note;
+      if(d.drive && d.started) drive(d.run, 1, JOB_LABEL[name]);
+      pollJob(name, JOB_LABEL[name]);
+    }catch(e){ $("gstatus").textContent = e.message; }
+  };
+}
+pollJob("weekly", JOB_LABEL.weekly);
 load();
 </script>
 </body>

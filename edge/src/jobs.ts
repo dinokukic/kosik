@@ -11,7 +11,11 @@ import { Kupi, source, type Offer } from "./stores.ts";
 import { inferUnit, today } from "./write.ts";
 
 export type Phase = "stores" | "kupi" | "eans";
-const STORE_SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik"];
+const ALL_STORE_SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik"];
+/** Tesco needs its web API key; without it the store is skipped instead of failing every run. */
+const storeSources = () => ALL_STORE_SOURCES.filter((s) => s !== "tesco" || !!env("TESCO_XAPI_KEY"));
+/** With a Mikku key, runs chain themselves in the background; without one, the open page drives them. */
+export const mikkuOn = () => !!env("MIKKU_API_KEY")?.trim();
 // refs per store call (batched APIs) and store calls per ref (per-item APIs)
 const CHUNK: Record<string, number> = { globus: 50, tesco: 10, billa: 30, dm: 30, rohlik: 20, kosik: 8, rossmann: 8, teta: 8, makro: 6 };
 const CALLS_PER_CHUNK: Record<string, number> = { kosik: 8, rossmann: 8, teta: 8, makro: 12 };
@@ -151,6 +155,7 @@ type PhaseFn = (state: Row, budget: Budget, log: string[]) => Promise<boolean>;
 /** Store prices: every watch of a direct store, in the store's batch size. */
 const storesPhase: PhaseFn = async (state, budget, log) => {
   const st = state.stores ??= { si: 0, offset: 0, saved: 0, refs: 0 };
+  const STORE_SOURCES = storeSources();
   while (st.si < STORE_SOURCES.length) {
     const src = STORE_SOURCES[st.si];
     const watches = await all("SELECT * FROM watch WHERE source=? AND product_id IS NOT NULL ORDER BY id", src);

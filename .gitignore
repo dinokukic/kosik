@@ -2,6 +2,7 @@
 .env
 .env.*
 .bunny/
+.kosik-deploy.json
 *.token
 
 # personal deployment notes, blog drafts

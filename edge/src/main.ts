@@ -1,7 +1,7 @@
 // Košík on bunny.net: pages + JSON API in one Edge Script, data in Bunny Database.
 import * as BunnySDK from "@bunny.net/edgescript-sdk";
 import { checkPassword, clearCookie, isAuthed, isJobCall, sessionCookie } from "./auth.ts";
-import { continueRun, latestRun, listSchedules, mikkuKeyShape, type Phase, setupSchedule, startRun } from "./jobs.ts";
+import { continueRun, latestRun, listSchedules, mikkuKeyShape, mikkuOn, type Phase, setupSchedule, startRun } from "./jobs.ts";
 import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
 import { link, lookup, search, suggest } from "./match.ts";
@@ -11,6 +11,8 @@ import { cartMove, cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, pro
 import { PAGES } from "./pages.gen.ts";
 
 const JOB_PHASE: Record<string, Phase> = { "/api/crawl": "kupi", "/api/eans": "eans", "/api/refresh": "stores" };
+const JOB_PHASES: Record<string, Phase[]> = { ...Object.fromEntries(Object.entries(JOB_PHASE).map(([k, v]) => [k, [v]])),
+  "/api/weekly": ["stores", "kupi", "eans"] };
 const SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik", "kupi"];
 
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -94,9 +96,10 @@ async function route(req: Request): Promise<Response> {
       case "/api/cart": return json({ items: await cartItems() });
       case "/api/lists": return json({ lists: await savedLists() });
       case "/api/list": return json(await savedList(Number(url.searchParams.get("id"))));
-      case "/api/crawl": case "/api/eans": case "/api/refresh": {  // status of the latest run with that phase
+      case "/api/crawl": case "/api/eans": case "/api/refresh": case "/api/weekly": {  // status of the latest run with that phase
         const r = await latestRun(JOB_PHASE[path]);
-        return json({ running: !!r?.running, log: r ? r.log + (r.stale ? "\n(stopped: no progress for 20 min)" : "") : "" });
+        return json({ running: !!r?.running, log: r ? r.log + (r.stale ? "\n(stopped: no progress for 20 min)" : "") : "",
+          run: r?.id ?? null, step: r ? Number(r.step) : 0, drive: !mikkuOn() });
       }
       case "/api/search": {
         const n = Math.max(1, Math.min(Number(url.searchParams.get("n") ?? 60), 150));
@@ -128,8 +131,10 @@ async function route(req: Request): Promise<Response> {
       case "/api/product/update": await productUpdate(a.id, a); return json({ ok: true });
       case "/api/product/delete": await productDelete(a.id); return json({ ok: true });
       case "/api/eans/dismiss": await eanDismiss(a.product_id); return json({ ok: true });
-      case "/api/crawl": case "/api/eans": case "/api/refresh":
-        return json({ ok: true, ...(await startRun([JOB_PHASE[path]], "manual")) });
+      case "/api/crawl": case "/api/eans": case "/api/refresh": case "/api/weekly":
+        return json({ ok: true, drive: !mikkuOn(), ...(await startRun(JOB_PHASES[path], "manual", mikkuOn())) });
+      // no Mikku: the open page runs the slices one by one (a step is claimed, so two tabs can't double up)
+      case "/api/run/step": return json(await continueRun(Number(a.run), Number(a.step), false));
       case "/api/link": return json({ ok: true, offers: await link(a.source, a.ref, a.product_id, a.name, a.packs, a.qty) });
       case "/api/unlink": return json({ ok: true, removed: await unlink(a.source, a.ref, a.product_id) });
     }

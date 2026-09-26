@@ -3,105 +3,157 @@
 > This talks to stores' own web APIs. Keep it personal and low-volume, respect each store's
 > terms of use, and never redistribute the prices it collects.
 
-# Košík — personal grocery price tracker
-
-Tracks grocery prices across Czech stores (Rohlík, Makro, dm, Kaufland…), shows the
-cheapest per item in a store matrix, and builds a shopping-list-by-store. Personal use
-for one household. **Not a product — never redistribute scraped prices.**
-
-See **CLAUDE.md** for the full design (three-layer data model, matrix view, basket,
-verified Rohlík API, Bunny architecture). Start there.
+# Košík: a household grocery price tracker
 
 [![Deploy with Claude](https://img.shields.io/badge/Deploy%20with-Claude-D97757?logo=claude&logoColor=white)](#deploy-with-claude)
 
+Košík answers one question before the weekly shop: **where is each thing on my list cheapest
+this week?** It tracks the items you actually buy across ten Czech grocers, plus the weekly
+flyers of the chains that don't sell online, and turns your picks into a printable shopping
+list, one section per store.
+
+It runs entirely on your own [bunny.net](https://bunny.net) account: one Edge Script serves the
+app and its API, and a Bunny Database holds your items, prices and lists. No servers to run.
+
+## What it does
+
+- **Matrix.** Your items × stores, with each cell showing the shelf price, the pack size and
+  the price per unit. The cheapest cell in each row is marked, and so is this week's best
+  flyer deal.
+- **Match.** Add an item once, search the stores (by barcode where a store supports it, by name
+  where it doesn't) and link the right product at each one. From then on prices are fetched by
+  id. Loose items can be grouped as a "need" (e.g. "chicken liver, any brand, per kg").
+- **List.** Tap cells in the matrix to put items on the list at that store. The List page groups
+  them by store with ticks and quantities, prints as a checklist, and can be saved and reused.
+- **What your list costs.** A chart of your picks against the cheapest combination, the best
+  two or three stores, the average and the most expensive. Tips like "only 2 items at dm: get
+  them at Rossmann instead, +11 Kč, one stop fewer" come with an **Apply changes** button.
+- **Weekly refresh.** Store prices, every current flyer offer (~12,000 a week from 19 chains via
+  Kupi.cz) and barcode lookups, run in small slices so they fit Edge Script limits.
+
+Prices are normalized per kg, litre, roll, egg or piece, so a six-pack and a single bottle
+compare fairly. Loyalty-card prices are marked "requires card".
+
+### Stores
+
+| How | Stores |
+|---|---|
+| Direct, from the store's own shop | Globus, Košík.cz, Tesco (needs a key), Billa, dm, Rossmann, Teta, Makro, Rohlík |
+| Weekly flyers via [Kupi.cz](https://www.kupi.cz) | Lidl, Albert, Kaufland, Penny and 15 more chains |
+
+Endpoints and quirks for each store are in [docs/store-apis.md](docs/store-apis.md).
+
 ## Deploy with Claude
 
-Runs entirely on your own [bunny.net](https://bunny.net) account: a Bunny Database and one
-Edge Script that serves the app and its API. You need [Claude Code](https://claude.com/claude-code),
-[Deno](https://deno.com) and the bunny CLI (`npm i -g @bunny.net/cli`, then `bunny login`).
+You need:
+- a [bunny.net](https://bunny.net) account;
+- [Claude Code](https://claude.com/claude-code);
+- [Deno](https://deno.com) (`brew install deno`);
+- the bunny CLI (`npm i -g @bunny.net/cli`).
+
+1. **Log in to bunny.net.** This opens the browser; Claude never sees your API key.
+   ```bash
+   bunny login
+   ```
+2. **Clone the repo and start Claude with the deploy skill.**
+   ```bash
+   git clone https://github.com/dinokukic/kosik && cd kosik
+   claude "/deploy-to-bunny"
+   ```
+   Saying "deploy this to my bunny.net account" works too.
+3. **Answer Claude's questions:** a name for your resources (default `kosik`) and whether you
+   want any of the [optional extras](#options). Claude then:
+   - checks the prerequisites;
+   - runs the setup script (about two minutes);
+   - reports the URL.
+4. **Open the URL and sign in.** The password is in `.env` as `KOSIK_PASSWORD`. Claude tells you
+   where it is but doesn't print it.
+
+### What gets created
+
+The setup script ([edge/tools/setup.ts](edge/tools/setup.ts)) does, in order:
+1. creates a Bunny Database and its tables and views;
+2. creates an Edge Script with its pull zone;
+3. pushes the settings, with passwords and keys stored as encrypted secrets (from a private temp
+   file, never on the command line);
+4. lets the login cookie through the pull zone (pull zones strip `Set-Cookie` by default);
+5. builds and deploys;
+6. signs in and calls the API to check it all works.
+
+Each step is recorded in `.kosik-deploy.json`, so if something fails you fix it and run it
+again, and finished steps are skipped. Edge Scripting and Bunny Database are billed by use,
+and a household-sized setup costs cents a month.
+
+### Without Claude
+
+It's the same script:
+```bash
+bunny login
+cd edge
+deno task setup --name kosik     # prints the URL; the password goes to ../.env
+```
+
+### Options
+
+Put any of these in `.env` in the repo root before you run the setup (create the file if it
+doesn't exist; setup keeps what's already there):
+
+| Variable | What it does | Without it |
+|---|---|---|
+| `KOSIK_PASSWORD` | Your login password | One is generated |
+| `TESCO_XAPI_KEY` | Tesco's public web API key | Tesco is skipped |
+| `MIKKU_API_KEY` | [mikku.dev](https://mikku.dev) runs the weekly refresh on Fridays by itself | Click **Refresh everything** on the Match page; it runs while the page is open |
+
+**Custom domain.** Point a CNAME at your script's `*.bunny.run` hostname. Then run
+`deno task setup --domain kosik.example.com`, which waits for DNS and issues SSL. Finally run
+plain `deno task setup` once more.
+
+### Updating and removing
 
 ```bash
-git clone https://github.com/dinokukic/kosik && cd kosik
-claude "/deploy-to-bunny"
+git pull && cd edge && deno task setup      # redeploys the latest code
+cd edge && deno task teardown               # deletes the script, pull zone and database, with all data
 ```
 
-Claude checks the prerequisites, asks a couple of questions (a name, optional extras) and runs
-the scripted setup: database + schema, Edge Script + pull zone, secrets, build, deploy, and a
-login check. You get a URL; the password is in `.env` as `KOSIK_PASSWORD`.
+## Using it
 
-Without Claude it's the same script:
+1. **Match:** add the things you buy regularly. Barcodes give exact matches across stores;
+   otherwise search by name (a separate search text lets you name items in one language and
+   search in Czech).
+2. **Match → Refresh everything:** pulls current prices and this week's flyers.
+3. **Matrix:** see where everything is cheapest, then tap cells to build the list.
+4. **List:** check the cost chart and tips, apply the ones you like, then print it.
 
-```bash
-cd edge && deno task setup --name kosik     # re-runnable; finished steps are skipped
-deno task teardown                          # deletes the script, pull zone and database
+## How it works
+
+```
+browser ──► Edge Script (pages + API, login cookie) ──► Bunny Database (SQL views do the grid)
+                    │
+                    └──► store APIs + Kupi.cz, in slices of ≤ 50 subrequests
+                         (chained by Mikku, or driven by the open Match page)
 ```
 
-Optional, in `.env` before you run it: `KOSIK_PASSWORD` (else generated), `TESCO_XAPI_KEY`
-(else Tesco is skipped) and `MIKKU_API_KEY` ([mikku.dev](https://mikku.dev) runs the weekly
-refresh on Fridays; without it, **Refresh everything** on the Match page runs it while the page
-is open). Custom domain: point a CNAME at the `*.bunny.run` hostname, then
-`deno task setup --domain kosik.example.com` and `deno task setup` once more.
-
-## Layout
-```
-watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, units)
-pricetrack.py          the tool (Bunny Database): init | seed | search | match | fetch | crawl | serve | ...
-dashboard/index.html   store matrix: price per unit, cheapest per row marked
-dashboard/match.html   match screen: pick each item's product per source (needs `serve`)
-dashboard/list.html    shopping list by store (tap prices in the matrix to fill it); printable
-dashboard/style.css    shared styles
-bunny/
-  schema.sql           three-layer schema + views (Bunny; same SQL works locally)
-  seed.mjs             load schema + stores + products into Bunny (auto-loads .env)
-  rohlik_probe.py      standalone, VERIFIED live Rohlík price puller
-requirements.txt       requests
-package.json           @bunny.net/database-client (for bunny/seed.mjs)
-.env                   Bunny creds (gitignored — never commit)
-```
+- `edge/`: the Edge Script in TypeScript. `src/main.ts` routes, `src/stores.ts` holds the ten
+  store connectors, `src/jobs.ts` the weekly run, `src/scenarios.ts` the list analysis.
+- `dashboard/`: the pages (plain HTML/JS), embedded into the script at build time.
+- `bunny/schema.sql`: the three-layer model (need / product / offering + price history) and
+  the views behind the matrix.
+- `pricetrack.py`: the original local tool (Python), still handy for scripting. See below.
+- [CLAUDE.md](CLAUDE.md): the full design notes, written for Claude Code.
 
 ## Local tool (Python, optional)
-Needs `.env` with `BUNNY_DATABASE_URL`, `BUNNY_DATABASE_AUTH_TOKEN` and `TESCO_XAPI_KEY`.
-`PRICETRACK_DB=local` runs against a local `prices.db` instead.
-```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python pricetrack.py init && python pricetrack.py seed
-python pricetrack.py serve                     # localhost:8765 — matrix + match screen
-python pricetrack.py matrix                    # rows x stores in the terminal
 
-# match once per item (you pick the right pack), then fetch by id forever
+Uses the same database. It needs `BUNNY_DATABASE_URL` and `BUNNY_DATABASE_AUTH_TOKEN` in `.env`
+(`PRICETRACK_DB=local` uses a local SQLite file instead).
+```bash
+python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+python pricetrack.py serve                     # localhost:8765: matrix, match, list
 python pricetrack.py match rohlik 8593803421216 --query "jihočeské máslo 250"
-python pricetrack.py match kupi 8593803421216  # link an item to its Kupi product (flyer deals)
-python pricetrack.py crawl                     # weekly: every current flyer offer (~10-20 min)
-python pricetrack.py find-eans                 # barcode candidates by name for items without one
+python pricetrack.py crawl                     # every current flyer offer
 python pricetrack.py fetch                     # store prices of everything matched
-python pricetrack.py store member kaufland off # don't count Kaufland Card prices
-
-# needs: group different brands/packs into one comparable row
-python pricetrack.py need add "Máslo 82%" --unit kg --category dairy
-python pricetrack.py need link "Máslo 82%" 8593803421216
-python pricetrack.py match rohlik --need "Máslo 82%" --query "máslo 82 250"
-
-python pricetrack.py export                    # writes dashboard/prices.json
-cd dashboard && python3 -m http.server         # then open localhost:8000
 ```
 
-## Prove live pulling
-```bash
-python bunny/rohlik_probe.py "pampers premium care 1"
-```
+## Never commit
 
-## Status
-- Rohlík adapter: **verified & working**.
-- Direct stores (verified): **Globus, Košík.cz, Tesco, Billa, dm, Rossmann, Teta, Makro,
-  Rohlík** — endpoints in `docs/store-apis.md`. Tesco needs `TESCO_XAPI_KEY` in `.env`.
-- Kupi (flyer aggregator): **verified & working** — a separate flyer-deals layer
-  (weekly crawl), shown as its own column; store prices come from the stores directly.
-- Heureka / Makro: **not wired** — inspect the live site first, same as Rohlík/Kupi.
-- Schema: three layers (need / product / offering + price history) built.
-- Dashboard: matrix, match screen and shopping list (by store, printable) built.
-- Storage: **Bunny Database `kosik`** is the database; `prices.db` is a local fallback.
-
-## Do NOT commit
-`.env`, `.bunny/`, `prices*.db`, `node_modules/`. All gitignored. If the DB token ever
-leaks, rotate it in the Bunny dashboard.
+`.env`, `.bunny/`, `.kosik-deploy.json`, `prices*.db`. All are gitignored. If a database token
+ever leaks, rotate it in the bunny.net dashboard.

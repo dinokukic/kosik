@@ -16,7 +16,7 @@ const SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", 
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   Response.json(data, { status, headers: { "Cache-Control": "no-store", ...headers } });
 
-/** The static site (kosik.ulandino.com) calls this API cross-origin with the session cookie. */
+/** The static site (SITE_URL) calls this API cross-origin with the session cookie. */
 const siteOrigin = () => (env("SITE_URL") ?? "").replace(/\/$/, "");
 function cors(req: Request, res: Response): Response {
   const origin = req.headers.get("origin");

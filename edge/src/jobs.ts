@@ -107,7 +107,7 @@ export function mikkuKeyShape() {
 
 /** Ask Mikku to call /jobs/continue for the next slice (idempotent per run+step). */
 async function scheduleContinue(id: number, step: number, delaySeconds = 2) {
-  const api = (env("API_URL") ?? "https://api.kosik.ulandino.com").replace(/\/$/, "");
+  const api = must("API_URL").replace(/\/$/, "");
   const r = await fetch("https://mikku.dev/v1/messages", {
     method: "POST",
     headers: { "Authorization": `Bearer ${mikkuKey()}`, "Content-Type": "application/json" },
@@ -131,7 +131,7 @@ export async function listSchedules() {
 
 /** Create (or replace) the weekly Mikku schedule: Fridays 13:00 UTC (15:00 CEST / 14:00 CET). */
 export async function setupSchedule(cron = "0 13 * * 5") {
-  const key = mikkuKey(), api = (env("API_URL") ?? "https://api.kosik.ulandino.com").replace(/\/$/, "");
+  const key = mikkuKey(), api = must("API_URL").replace(/\/$/, "");
   const h = { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" };
   const list = await (await fetch("https://mikku.dev/v1/schedules", { headers: h })).json();
   // deno-lint-ignore no-explicit-any

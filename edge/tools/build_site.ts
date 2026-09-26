@@ -1,5 +1,8 @@
 // Static site build: ../dashboard -> dist-site/, with config.js pointing at the API domain.
-const API = Deno.env.get("KOSIK_API") ?? "https://api.kosik.ulandino.com/";
+// KOSIK_API = the Edge Script's public URL, from the environment or ../.env (e.g. https://api.kosik.example.com/)
+const dotenv = await Deno.readTextFile(new URL("../../.env", import.meta.url)).catch(() => "");
+const API = Deno.env.get("KOSIK_API") ?? dotenv.match(/^KOSIK_API=(.*)$/m)?.[1]?.trim().replace(/^["']|["']$/g, "");
+if (!API) { console.error("Set KOSIK_API (the API's URL, e.g. https://api.kosik.example.com/) in the environment or .env"); Deno.exit(1); }
 const src = new URL("../../dashboard/", import.meta.url), out = new URL("../dist-site/", import.meta.url);
 await Deno.remove(out, { recursive: true }).catch(() => {});
 await Deno.mkdir(out, { recursive: true });

@@ -4,6 +4,10 @@
 .bunny/
 *.token
 
+# personal deployment notes, blog drafts
+CLAUDE.local.md
+docs/blog/
+
 # local db & build
 prices*.db
 dashboard/prices.json

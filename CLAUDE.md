@@ -23,12 +23,14 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   +0.1), keep >= 0.6 in `ean_candidate`; `ean_lookup` records what was searched/dismissed.
   Match screen: "Use this barcode" sets the EAN and runs the barcode match across stores.
 - **Hosting on bunny.net (2026-09-26):** static site `kosik` (bunny sites; pages from
-  `dashboard/`, deployed by `edge/tools/build_site.ts` with `config.js` -> API base) at
-  kosik.ulandino.com; Edge Script `kosik-api` (id 92715, pull zone 6693170; code in `edge/`)
-  at api.kosik.ulandino.com, also serving the pages same-origin on kosik-api-j8agg.bunny.run.
-  Login: APP_PASSWORD -> HMAC-signed cookie (SameSite=Lax; site + api are same-site), CORS
-  only for SITE_URL. DNS for ulandino.com is at Namecheap (CNAMEs, not Bunny DNS).
-  Pull zone gotcha: DisableCookies=true by default strips Set-Cookie -> turned off.
+  `dashboard/`, deployed by `edge/tools/build_site.ts`, which writes the API base from
+  `KOSIK_API` into `config.js` and content-hashes CSS/JS) and Edge Script `kosik-api` (code in
+  `edge/`) on its own subdomain. Edge env: `API_URL` (its public URL, for Mikku callbacks),
+  `SITE_URL` (the site's origin, the only CORS origin), `APP_PASSWORD`, `SESSION_SECRET`,
+  `JOB_SECRET`, `MIKKU_API_KEY`, `TESCO_XAPI_KEY`, `BUNNY_DATABASE_URL/AUTH_TOKEN`.
+  Login: APP_PASSWORD -> HMAC-signed cookie (SameSite=Lax; site + api must be same-site).
+  Pull zone gotcha: DisableCookies=true by default strips Set-Cookie -> turn it off.
+  This deployment's domains and resource ids: `CLAUDE.local.md` (gitignored).
 - **Background jobs on the edge (2026-09-26)** — `edge/src/jobs.ts`: one weekly run, phases
   stores -> kupi -> eans, done in slices (<= ~40 subrequests, ~20 s each) with progress in
   `job_run`. Mikku (mikku.dev, a colleague's scheduler) schedule `kosik-weekly` cron

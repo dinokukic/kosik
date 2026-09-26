@@ -1,3 +1,8 @@
+> **Claude-coded for personal use.**
+>
+> This talks to stores' own web APIs. Keep it personal and low-volume, respect each store's
+> terms of use, and never redistribute the prices it collects.
+
 # Košík — personal grocery price tracker
 
 Tracks grocery prices across Czech stores (Rohlík, Makro, dm, Kaufland…), shows the

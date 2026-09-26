@@ -9,6 +9,7 @@ export type Offer = {
   price_incl: number; is_promo: boolean; valid_from: string | null; promo_until: string | null;
   club: string | null; note: string | null; ref: string; ean?: string | null; eans?: string[];
   price_net?: number; key?: string; product?: string; slug?: string;
+  size?: string | null;  // size of the priced unit when the name describes a multipack (Makro)
 };
 export type Candidate = { ref: string; name: string; url: string; offers: Offer[] };
 export type Source = {
@@ -191,10 +192,13 @@ const Tesco: Source = {
 // ---------------------------------------------------------------- Billa (catalogue API, haléře)
 // deno-lint-ignore no-explicit-any
 function billaOffer(p: any): Offer | null {
-  const pr = p.price ?? {}, cur = pr.regular?.value;
+  const pr = p.price ?? {};
+  let cur = pr.regular?.value, std = pr.standard?.value ?? pr.crossed, amount = `${p.amount ?? ""} ${p.volumeLabelShort ?? ""}`.trim();
   if (cur == null) return null;
-  const std = pr.standard?.value ?? pr.crossed;
-  return storeOffer("billa", "Billa", p.sku, p.name, `${p.amount ?? ""} ${p.volumeLabelShort ?? ""}`.trim(),
+  if (p.weightPieceArticle || p.weightArticle) {  // sold by weight: `value` is a per-piece estimate, the price is per kg
+    cur = pr.regular?.perStandardizedQuantity ?? cur; std = pr.standard?.perStandardizedQuantity ?? null; amount = "1 kg";
+  }
+  return storeOffer("billa", "Billa", p.sku, p.name, amount,
     `https://www.billa.cz/produkt/${p.slug ?? p.sku}`, cur / 100, std ? std / 100 : null, null,
     pr.discountPercentage ? `${pr.discountPercentage} %` : null);
 }
@@ -337,7 +341,7 @@ async function makroBundles(ids: string[], prices: Record<string, number | null>
     const d = await getJson(`${MAKRO}/evaluate.article.v1/betty-variants?${qs([["storeIds", MAKRO_STORE()], ["country", "CZ"], ["locale", "cs-CZ"], ...ids.slice(i, i + 20).map((x) => ["ids", x] as [string, string])])}`);
     Object.assign(arts, d.result ?? {});
   }
-  const out: { ean: string; desc: string; food: boolean; net: number | null }[] = [];
+  const out: { ean: string; desc: string; food: boolean; net: number | null; size: string | null }[] = [];
   // deno-lint-ignore no-explicit-any
   for (const art of Object.values(arts) as any[]) {
     // deno-lint-ignore no-explicit-any
@@ -350,13 +354,25 @@ async function makroBundles(ids: string[], prices: Record<string, number | null>
         // deno-lint-ignore no-explicit-any
         const eans = (b.gtins ?? []).map((g: any) => g.number).filter(Boolean);
         if (!eans.length) continue;
-        out.push({ ean: eans[0], desc: b.description ?? "", food: !!art.food, net: Number(b.bundleSize ?? 1) === smallest ? (prices[vid] ?? null) : null });
+        const n = Number(b.bundleSize ?? 1);
+        out.push({ ean: eans[0], desc: b.description ?? "", food: !!art.food, net: n === smallest ? (prices[vid] ?? null) : null,
+          size: n > 1 ? makroPiece(b) : null });  // Makro prices per piece: '5 x 100 g' -> '100 g' 
       }
     }
   }
   return out;
 }
-const makroOffer = (ean: string, desc: string, net: number, food: boolean): Offer => ({
+// deno-lint-ignore no-explicit-any
+function makroPiece(b: any): string | null {
+  const cd = b.contentData ?? {};
+  for (const [key, units] of [["netContentVolume", { ML: "ml", LITER: "l", L: "l" }], ["netPieceWeight", { GRAM: "g", KILOGRAM: "kg", KG: "kg" }]] as const) {
+    const v = cd[key] ?? {};
+    const u = (units as Record<string, string>)[v.uom];
+    if (v.value && u) return `${+v.value} ${u}`;
+  }
+  return null;
+}
+const makroOffer = (ean: string, desc: string, net: number, food: boolean, size: string | null = null): Offer => ({ size,
   store_id: "makro", store_name: "Makro", store_ref: ean, name: desc, amount: "", url: `${MAKRO}/shop/search?q=${ean}`,
   price_incl: Math.round(net * (food ? 1.12 : 1.21) * 100) / 100, price_net: net, is_promo: false, valid_from: null,
   promo_until: null, club: null, note: null, ref: "" });
@@ -365,10 +381,10 @@ const Makro: Source = {
   async search(q, n = 12) {
     const res = (await makroSearch(q, n)).results ?? {};
     const prices = Object.fromEntries(Object.entries(res).map(([k, v]) => [k, (v as { price?: number }).price ?? null]));
-    return (await makroBundles(Object.keys(res).slice(0, n), prices)).map(({ ean, desc, food, net }) => ({
+    return (await makroBundles(Object.keys(res).slice(0, n), prices)).map(({ ean, desc, food, net, size }) => ({
       ref: ean, name: desc, url: `${MAKRO}/shop/search?q=${ean}`,
       // the VAT class isn't knowable here ('food' covers diapers): candidates show the net price
-      offers: net != null ? [{ ...makroOffer(ean, desc, net, food), price_incl: net, amount: "bez DPH" }] : [] }));
+      offers: net != null ? [{ ...makroOffer(ean, desc, net, food, size), price_incl: net, amount: size ? `bez DPH, per ${size}` : "bez DPH" }] : [] }));
   },
   async fetch(refs) {
     const out: Record<string, Offer[]> = {};
@@ -377,7 +393,7 @@ const Makro: Source = {
       const [vid, hit] = Object.entries(res)[0] ?? [];
       if (!vid) continue;
       const b = (await makroBundles([vid], { [vid]: (hit as { price?: number }).price ?? null })).find((x) => x.ean === ean);
-      if (b && b.net != null) out[ean] = [makroOffer(ean, b.desc, b.net, b.food)];
+      if (b && b.net != null) out[ean] = [makroOffer(ean, b.desc, b.net, b.food, b.size)];
     }
     return out;
   },

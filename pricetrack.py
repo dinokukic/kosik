@@ -553,12 +553,23 @@ class Makro:
                     n = int(b.get("bundleSize") or 1)
                     # the search price belongs to the variant's smallest pack
                     net = prices.get(vid) if n == smallest else None
-                    out.append((eans[0], b.get("description", ""), n, bool(art.get("food")), net))
+                    out.append((eans[0], b.get("description", ""), n, bool(art.get("food")), net,
+                                self._piece(b) if n > 1 else None))
         return out
 
-    def _offer(self, ean, desc, net, food, vat=None):
+    @staticmethod
+    def _piece(b):
+        """Size of ONE piece of a multipack ('5 x 100 g' -> '100 g'): Makro prices per piece."""
+        cd = b.get("contentData") or {}
+        for key, units in (("netContentVolume", {"ML": "ml", "LITER": "l", "L": "l"}),
+                           ("netPieceWeight", {"GRAM": "g", "KILOGRAM": "kg", "KG": "kg"})):
+            v = cd.get(key) or {}
+            if v.get("value") and v.get("uom") in units: return f"{v['value']:g} {units[v['uom']]}"
+        return None
+
+    def _offer(self, ean, desc, net, food, vat=None, size=None):
         vat = vat if vat is not None else (12 if food else 21)
-        return dict(store_id="makro", store_name="Makro", store_ref=ean, name=desc, amount="",
+        return dict(store_id="makro", store_name="Makro", store_ref=ean, name=desc, amount="", size=size,
                     url=f"{self.BASE}/shop/search?q={ean}", price_incl=round(net * (1 + vat / 100), 2),
                     price_net=net, food=food, is_promo=False, valid_from=None, promo_until=None,
                     club=None, note=None, ref="")
@@ -567,10 +578,11 @@ class Makro:
         res = self._search(query, rows=n).get("results", {})
         prices = {k: v.get("price") for k, v in res.items()}
         cands = []
-        for ean, desc, _, food, net in self._bundles(list(res)[:n], prices):
+        for ean, desc, _, food, net, size in self._bundles(list(res)[:n], prices):
             # VAT depends on the item (Makro's 'food' flag is not the VAT class: diapers are
             # 'food'), so candidates show the net price; save_offers adds the item's VAT.
-            offers = [dict(self._offer(ean, desc, net, food), price_incl=net, amount="bez DPH")] \
+            offers = [dict(self._offer(ean, desc, net, food, size=size), price_incl=net,
+                           amount=f"bez DPH, per {size}" if size else "bez DPH")] \
                 if net is not None else []
             cands.append(dict(ref=ean, name=desc, url=f"{self.BASE}/shop/search?q={ean}", offers=offers))
         return cands
@@ -585,7 +597,7 @@ class Makro:
             vid, hit = next(iter(res.items()))
             b = [x for x in self._bundles([vid], {vid: hit.get("price")}) if x[0] == ean]
             if b and b[0][4] is not None:
-                out[ean] = [self._offer(ean, b[0][1], b[0][4], b[0][3])]
+                out[ean] = [self._offer(ean, b[0][1], b[0][4], b[0][3], size=b[0][5])]
         return out
 
     def ref_of(self, store_ref): return store_ref
@@ -838,6 +850,11 @@ class Billa:
         if cur is None: return None
         std = (pr.get("standard") or {}).get("value") or pr.get("crossed")
         amount = f"{p.get('amount', '')} {p.get('volumeLabelShort', '')}".strip()
+        if p.get("weightPieceArticle") or p.get("weightArticle"):
+            # sold by weight: `value` is a per-piece estimate, the real price is per kg
+            cur = (pr.get("regular") or {}).get("perStandardizedQuantity") or cur
+            std = (pr.get("standard") or {}).get("perStandardizedQuantity") or None
+            amount = "1 kg"
         return store_offer("billa", "Billa", p["sku"], p["name"], amount,
                            f"{self.BASE}/produkt/{p.get('slug', p['sku'])}", cur / 100,
                            std / 100 if std else None,
@@ -1004,7 +1021,7 @@ def save_offers(c, src, offers, product=None, need=None, qty=None):
     for i, o in enumerate(offers):
         if o.get("price_net") is not None and product is not None and product["vat_pct"]:
             o = offers[i] = dict(o, price_incl=round(o["price_net"] * (1 + product["vat_pct"] / 100), 2))
-        unit, guess = infer_unit(f"{o['name']} {o['amount']}", target["category"] if target else None)
+        unit, guess = infer_unit(o.get("size") or f"{o['name']} {o['amount']}", target["category"] if target else None)
         q = qty if qty is not None else (guess if target and unit == target["unit"] else None)
         if product is not None and q is not None and abs(q - product["unit_qty"]) < 1e-9:
             q = None  # same pack as the product: inherit

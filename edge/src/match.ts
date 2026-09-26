@@ -20,7 +20,7 @@ export function offerStatements(src: string, offers: Offer[], product: Row, qty:
   const ts = today();
   for (let o of offers) {
     if (o.price_net != null && product.vat_pct) o = { ...o, price_incl: Math.round(o.price_net * (1 + product.vat_pct / 100) * 100) / 100 };
-    const [unit, guess] = inferUnit(`${o.name} ${o.amount}`);
+    const [unit, guess] = inferUnit(o.size || `${o.name} ${o.amount}`);
     let q: number | null = qty ?? (unit === product.unit ? guess : null);
     if (q != null && Math.abs(q - product.unit_qty) < 1e-9) q = null;  // same pack as the item: inherit
     out.push(

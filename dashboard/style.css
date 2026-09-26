@@ -181,3 +181,7 @@
   .reshead{display:flex;flex-wrap:wrap;gap:.5rem .8rem;align-items:center;margin:.2rem 0 .6rem;font-size:.8rem;color:var(--muted)}
   .reshead .rfilter{flex:1 1 12rem;min-width:0;padding:.28rem .55rem;border:1px solid var(--line);border-radius:.4rem;
     background:transparent;color:var(--ink)}
+  /* login (edge) */
+  .login{display:flex;flex-wrap:wrap;gap:.8rem;align-items:flex-end;margin-top:1.6rem}
+  .login label{display:flex;flex-direction:column;gap:.3rem;font-size:.8rem;color:var(--muted)}
+  .login input{font:inherit;padding:.45rem .6rem;border:1px solid var(--line);border-radius:.4rem;background:transparent;color:var(--ink);min-width:16rem}

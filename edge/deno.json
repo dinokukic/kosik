@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "pages": "deno run -A tools/embed_pages.ts",
+    "build": "deno task pages && deno run -A build.mjs",
+    "check": "deno check src/main.ts",
+    "deploy": "deno task build && bunny scripts deploy dist/index.ts"
+  },
+  "imports": {
+    "@bunny.net/database-client": "npm:@bunny.net/database-client@0.0.3",
+    "@bunny.net/edgescript-sdk": "https://esm.sh/@bunny.net/edgescript-sdk@0.12.0"
+  },
+  "compilerOptions": { "strict": true, "lib": ["deno.window", "dom"] }
+}

@@ -29,6 +29,11 @@
     <span class="status" id="status"></span>
   </div>
   <div id="stores"></div>
+  <section class="compare noprint" id="compare" hidden>
+    <h2>What this list would cost <label class="fl"><input type="checkbox" id="withFlyers" checked> include flyer deals</label></h2>
+    <table><tbody id="compareRows"></tbody></table>
+    <p class="hint" id="compareNote"></p>
+  </section>
   <section class="saved noprint" id="saved" hidden>
     <h2>Saved lists</h2>
     <ul id="savedList"></ul>
@@ -80,8 +85,38 @@ function line(it, ro){
   </li>`;
 }
 
+// ---- cheapest / efficient run / average / most expensive (edge: /api/scenarios)
+async function loadCompare(){
+  const box = $("compare");
+  const items = VIEW ? VIEW.items : ITEMS;
+  if(!items.length){ box.hidden = true; return; }
+  const q = (VIEW ? `saved=${VIEW.id}&` : "") + `flyers=${$("withFlyers").checked ? 1 : 0}`;
+  const d = await api("scenarios?" + q).catch(()=>null);
+  if(!d || !d.scenarios){ box.hidden = true; return; }  // not available (e.g. local server)
+  const s = d.scenarios, base = s.cheapest.total;
+  const diff = t => t == null ? "" : t === base ? "—" : `${t > base ? "+" : ""}${CZK(t - base)} (${t > base ? "+" : ""}${Math.round((t / base - 1) * 100)} %)`;
+  const row = (label, stores, total, extra="") => `<tr><th>${label}</th><td class="st">${stores}</td>
+    <td class="tot">${total == null ? "–" : CZK(total)}</td><td class="df">${diff(total)}${extra}</td></tr>`;
+  $("compareRows").innerHTML =
+    row("Cheapest", `${s.cheapest.stores} stores: ${esc(s.cheapest.list.join(", "))}`, s.cheapest.total) +
+    s.efficient.map(e => row(e.k === 1 ? "One-stop" : `Best ${e.k} stores`, esc(e.stores.join(" + ")) +
+      (e.covered < e.of ? ` <span class="warn">(${e.covered} of ${e.of} items)</span>` : ""), e.total)).join("") +
+    row("Average", "each item at an average store", s.average.total) +
+    row("Most expensive", "each item at its priciest store", s.most_expensive.total) +
+    (VIEW ? "" : row("Your picks", "the stores on this list", s.your_picks.total,
+      s.your_picks.missing ? ` <span class="warn">(${s.your_picks.missing} not priced now)</span>` : ""));
+  $("compareNote").textContent = `${d.priced} of ${d.items} items priced` +
+    (d.only_one_store ? `, ${d.only_one_store} sold by only one store (same cost in every row)` : "") +
+    ". Each item is costed on the same reference pack × price per unit, so pack sizes don't skew stores. " +
+    "Store combinations are picked by how many items they cover, then by total.";
+  box.hidden = false;
+}
+$("withFlyers").onchange = loadCompare;
+
+let compareTimer = null;
 function render(){
   const ro = !!VIEW, items = ro ? VIEW.items : ITEMS;
+  clearTimeout(compareTimer); compareTimer = setTimeout(loadCompare, 400);  // ticks/qty changes re-render often
   $("viewbar").hidden = !ro;
   $("saved").hidden = ro || !$("savedList").children.length;
   if(ro) $("viewing").innerHTML = `<b>${esc(VIEW.name)}</b> · saved ${esc(VIEW.created.replace("T"," "))}`;

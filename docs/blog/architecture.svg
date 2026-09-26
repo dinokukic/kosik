@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
+  <title>Košík on bunny.net: architecture</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6478"/>
+    </marker>
+    <marker id="arrO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f47c20"/>
+    </marker>
+    <style>
+      .box{fill:#ffffff;stroke:#d5dae3;stroke-width:1.5}
+      .bunny{fill:#fff6ee;stroke:#f47c20;stroke-width:1.8}
+      .ext{fill:#f4f6f9;stroke:#c6ccd8;stroke-width:1.2;stroke-dasharray:4 3}
+      .t{font-size:15px;font-weight:650;fill:#1d2433}
+      .s{font-size:12px;fill:#5b6478}
+      .tag{font-size:10.5px;font-weight:700;fill:#f47c20;letter-spacing:.06em}
+      .edge{stroke:#5b6478;stroke-width:1.6;fill:none}
+      .job{stroke:#f47c20;stroke-width:1.8;fill:none}
+      .lbl{font-size:11.5px;fill:#5b6478}
+      .lblO{font-size:11.5px;fill:#c25d0e;font-weight:600}
+    </style>
+  </defs>
+  <rect width="960" height="600" fill="#fbfbfd"/>
+
+  <!-- region: bunny.net -->
+  <rect x="210" y="40" width="470" height="408" rx="18" fill="none" stroke="#f47c20" stroke-width="1.2" stroke-dasharray="6 5" opacity=".55"/>
+  <text x="228" y="64" class="tag">BUNNY.NET</text>
+
+  <!-- people -->
+  <rect x="24" y="200" width="160" height="104" rx="12" class="box"/>
+  <text x="104" y="232" text-anchor="middle" class="t">You</text>
+  <text x="104" y="252" text-anchor="middle" class="s">phone or laptop</text>
+  <text x="104" y="270" text-anchor="middle" class="s">grid · match · list</text>
+  <text x="104" y="288" text-anchor="middle" class="s">session cookie</text>
+
+  <!-- DNS -->
+  <rect x="240" y="86" width="190" height="62" rx="12" class="bunny"/>
+  <text x="335" y="112" text-anchor="middle" class="t">Bunny DNS</text>
+  <text x="335" y="131" text-anchor="middle" class="s">ulandino.com · free SSL</text>
+
+  <!-- Sites -->
+  <rect x="240" y="176" width="190" height="92" rx="12" class="bunny"/>
+  <text x="335" y="202" text-anchor="middle" class="t">Bunny Sites</text>
+  <text x="335" y="221" text-anchor="middle" class="s">kosik.ulandino.com</text>
+  <text x="335" y="239" text-anchor="middle" class="s">static pages (HTML/JS)</text>
+  <text x="335" y="257" text-anchor="middle" class="s">immutable deploys</text>
+
+  <!-- Edge Script -->
+  <rect x="240" y="296" width="190" height="128" rx="12" class="bunny"/>
+  <text x="335" y="322" text-anchor="middle" class="t">Edge Script</text>
+  <text x="335" y="341" text-anchor="middle" class="s">api.kosik.ulandino.com</text>
+  <text x="335" y="359" text-anchor="middle" class="s">login · API · 10 connectors</text>
+  <text x="335" y="377" text-anchor="middle" class="s">weekly job in slices</text>
+  <text x="335" y="395" text-anchor="middle" class="s">≤ 50 subrequests each</text>
+  <text x="335" y="413" text-anchor="middle" class="s">runs on the Prague PoP</text>
+
+  <!-- Database -->
+  <rect x="470" y="296" width="190" height="128" rx="12" class="bunny"/>
+  <text x="565" y="322" text-anchor="middle" class="t">Bunny Database</text>
+  <text x="565" y="341" text-anchor="middle" class="s">SQLite dialect over HTTP</text>
+  <text x="565" y="359" text-anchor="middle" class="s">items · prices · flyers</text>
+  <text x="565" y="377" text-anchor="middle" class="s">lists · job progress</text>
+  <text x="565" y="395" text-anchor="middle" class="s">grid logic = SQL views</text>
+  <text x="565" y="413" text-anchor="middle" class="s">batched round trips</text>
+
+  <!-- Stores -->
+  <rect x="716" y="236" width="224" height="152" rx="12" class="ext"/>
+  <text x="828" y="262" text-anchor="middle" class="t">10 Czech grocers</text>
+  <text x="828" y="283" text-anchor="middle" class="s">Globus · Košík.cz · Tesco · Billa</text>
+  <text x="828" y="301" text-anchor="middle" class="s">dm · Rossmann · Teta · Makro</text>
+  <text x="828" y="319" text-anchor="middle" class="s">Rohlík</text>
+  <text x="828" y="343" text-anchor="middle" class="t" style="font-size:14px">Kupi.cz flyers</text>
+  <text x="828" y="362" text-anchor="middle" class="s">19 chains · ~11,800 offers/week</text>
+  <text x="828" y="378" text-anchor="middle" class="s">(Lidl, Albert, Kaufland, Penny…)</text>
+
+  <!-- Mikku -->
+  <rect x="470" y="470" width="190" height="72" rx="12" class="ext"/>
+  <text x="565" y="496" text-anchor="middle" class="t">Mikku</text>
+  <text x="565" y="515" text-anchor="middle" class="s">job scheduler (mikku.dev)</text>
+  <text x="565" y="532" text-anchor="middle" class="s">Fridays 15:00 Prague</text>
+
+  <!-- arrows: you -> sites, you -> api -->
+  <path d="M184 238 C 210 232, 220 224, 240 222" class="edge" marker-end="url(#arr)"/>
+  <text x="192" y="214" class="lbl">pages</text>
+  <path d="M184 272 C 210 300, 222 340, 240 352" class="edge" marker-end="url(#arr)"/>
+  <text x="104" y="330" class="lbl" text-anchor="middle">API calls</text>
+  <text x="104" y="345" class="lbl" text-anchor="middle">+ cookie (CORS)</text>
+  <!-- dns resolves both -->
+  <path d="M335 148 L335 176" class="edge" marker-end="url(#arr)"/>
+  <path d="M430 128 C 452 150, 452 280, 431 318" class="edge" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+  <!-- api <-> db -->
+  <path d="M430 346 L470 346" class="edge" marker-end="url(#arr)"/>
+  <path d="M470 372 L430 372" class="edge" marker-end="url(#arr)"/>
+  <text x="438" y="339" class="lbl" style="font-size:10.5px">SQL</text>
+  <!-- api -> stores -->
+  <path d="M430 304 C 520 250, 640 250, 716 290" class="edge" marker-end="url(#arr)"/>
+  <text x="560" y="243" class="lbl">search · link · weekly prices</text>
+  <!-- mikku loop -->
+  <path d="M470 492 C 400 492, 360 470, 350 424" class="job" marker-end="url(#arrO)"/>
+  <text x="336" y="486" class="lblO" text-anchor="end">POST /jobs/weekly</text>
+  <text x="336" y="502" class="lblO" text-anchor="end">POST /jobs/continue</text>
+  <path d="M400 424 C 420 470, 440 510, 470 516" class="job" marker-end="url(#arrO)"/>
+  <text x="676" y="500" class="lblO">"call me again in 2 s"</text>
+  <text x="676" y="516" class="lbl">(idempotency key per step)</text>
+  <text x="676" y="484" class="tag" style="fill:#5b6478">EXTERNAL</text>
+
+  <text x="24" y="584" class="s">Košík — a household grocery price tracker, built with Claude Code on bunny.net.</text>
+</svg>

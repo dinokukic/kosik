@@ -185,3 +185,15 @@
   .login{display:flex;flex-wrap:wrap;gap:.8rem;align-items:flex-end;margin-top:1.6rem}
   .login label{display:flex;flex-direction:column;gap:.3rem;font-size:.8rem;color:var(--muted)}
   .login input{font:inherit;padding:.45rem .6rem;border:1px solid var(--line);border-radius:.4rem;background:transparent;color:var(--ink);min-width:16rem}
+  /* list: what it would cost */
+  .compare{margin:1.8rem 0 .5rem}
+  .compare h2{font-size:1.05rem;border-bottom:2px solid var(--ink);padding-bottom:.35rem;display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:baseline;justify-content:space-between}
+  .compare h2 .fl{font-size:.75rem;font-weight:400;color:var(--muted)}
+  .compare table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  .compare th,.compare td{padding:.45rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:baseline}
+  .compare th{font-weight:600;white-space:nowrap}
+  .compare td.st{font-size:.78rem;color:var(--muted)}
+  .compare td.tot{text-align:right;white-space:nowrap;font-weight:600}
+  .compare td.df{text-align:right;white-space:nowrap;font-size:.8rem;color:var(--muted)}
+  .compare .warn{color:#b04a3a}
+  .compare .hint{font-size:.72rem;color:var(--muted);font-style:italic}

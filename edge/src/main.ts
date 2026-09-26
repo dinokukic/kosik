@@ -5,6 +5,7 @@ import { continueRun, latestRun, listSchedules, mikkuKeyShape, type Phase, setup
 import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
 import { link, lookup, search, suggest } from "./match.ts";
+import { scenarios } from "./scenarios.ts";
 import { cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, productDelete,
   productUpdate, savedListDelete, savedListReuse, unlink } from "./write.ts";
 import { PAGES } from "./pages.gen.ts";
@@ -100,6 +101,10 @@ async function route(req: Request): Promise<Response> {
       case "/api/search": {
         const n = Math.max(1, Math.min(Number(url.searchParams.get("n") ?? 60), 150));
         return json({ candidates: await search(url.searchParams.get("source") ?? "", url.searchParams.get("q") ?? "", n), n });
+      }
+      case "/api/scenarios": {
+        const saved = url.searchParams.get("saved");
+        return json(await scenarios({ saved: saved ? Number(saved) : undefined, flyers: url.searchParams.get("flyers") !== "0" }));
       }
       case "/api/suggest": return json({ results: await suggest(Number(url.searchParams.get("product_id"))) });
       case "/api/lookup": return json({ results: await lookup(url.searchParams.get("q") ?? "") });

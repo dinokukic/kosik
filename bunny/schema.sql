@@ -159,6 +159,20 @@ CREATE TABLE IF NOT EXISTS saved_list (
   items   TEXT NOT NULL                     -- JSON array of cart_item rows as they were
 );
 
+-- Background runs on the edge (weekly via Mikku): phases done in slices, each slice claims its
+-- step so a retried/duplicate delivery can't run it twice.
+CREATE TABLE IF NOT EXISTS job_run (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  phases   TEXT NOT NULL,                   -- JSON ["stores","kupi","eans"]
+  status   TEXT NOT NULL DEFAULT 'running', -- running | done | failed
+  step     INTEGER NOT NULL DEFAULT 0,      -- last completed slice
+  claimed  INTEGER NOT NULL DEFAULT 0,      -- slice currently being worked on
+  state    TEXT NOT NULL DEFAULT '{}',      -- JSON cursor per phase
+  log      TEXT NOT NULL DEFAULT '',
+  started  TEXT NOT NULL,
+  updated  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_offering_product ON offering(product_id);
 CREATE INDEX IF NOT EXISTS idx_offering_need ON offering(need_id);
 CREATE INDEX IF NOT EXISTS idx_price_ts ON price(ts);

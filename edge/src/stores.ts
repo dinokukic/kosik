@@ -178,8 +178,8 @@ const Tesco: Source = {
   },
   async fetch(refs) {
     const out: Record<string, Offer[]> = {};
-    for (let i = 0; i < refs.length; i += 20) {
-      const res = await tescoPost(refs.slice(i, i + 20).map((t, j) => ({ operationName: `P${j}`, variables: { t },
+    for (let i = 0; i < refs.length; i += 10) {  // xapi: "Batch size of 16 exceeds the maximum allowed size" (max 10)
+      const res = await tescoPost(refs.slice(i, i + 10).map((t, j) => ({ operationName: `P${j}`, variables: { t },
         query: `query P${j}($t:String){product(tpnc:$t){${TESCO_NODE}}}` })));
       for (const r of res) { const o = tescoOffers(r?.data?.product); if (o.length) out[o[0].store_ref] = o; }
     }

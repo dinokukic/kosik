@@ -1,6 +1,7 @@
 // Košík on bunny.net: pages + JSON API in one Edge Script, data in Bunny Database.
 import * as BunnySDK from "@bunny.net/edgescript-sdk";
-import { checkPassword, clearCookie, isAuthed, sessionCookie } from "./auth.ts";
+import { checkPassword, clearCookie, isAuthed, isJobCall, sessionCookie } from "./auth.ts";
+import { continueRun, latestRun, listSchedules, mikkuKeyShape, type Phase, setupSchedule, startRun } from "./jobs.ts";
 import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
 import { link, lookup, search, suggest } from "./match.ts";
@@ -8,6 +9,7 @@ import { cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, p
   productUpdate, savedListDelete, savedListReuse, unlink } from "./write.ts";
 import { PAGES } from "./pages.gen.ts";
 
+const JOB_PHASE: Record<string, Phase> = { "/api/crawl": "kupi", "/api/eans": "eans", "/api/refresh": "stores" };
 const SOURCES = ["globus", "kosik", "tesco", "billa", "dm", "rossmann", "teta", "makro", "rohlik", "kupi"];
 
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -46,6 +48,19 @@ async function route(req: Request): Promise<Response> {
       "Access-Control-Allow-Methods": "GET, POST", "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Max-Age": "86400" } });
   }
+  // ---- jobs: called by Mikku (or by hand) with the job secret, not the cookie
+  if (path.startsWith("/jobs/")) {
+    if (!(await isJobCall(req))) return json({ error: "forbidden" }, 403);
+    const chain = url.searchParams.get("chain") !== "0";  // chain=0: the caller drives the slices (no Mikku)
+    if (path === "/jobs/weekly" && req.method === "POST") return json(await startRun(["stores", "kupi", "eans"], chain ? "weekly" : "manual, driven by caller", chain));
+    if (path === "/jobs/continue" && req.method === "POST") {
+      return json(await continueRun(Number(url.searchParams.get("run")), Number(url.searchParams.get("step")), chain));
+    }
+    if (path === "/jobs/setup" && req.method === "POST") return json(await setupSchedule(url.searchParams.get("cron") ?? undefined));
+    if (path === "/jobs/schedules") return json(await listSchedules());
+    if (path === "/jobs/status") return json({ run: await latestRun(), mikku_key: mikkuKeyShape() });
+    return json({ error: "no such job endpoint" }, 404);
+  }
   // ---- open: login page + its assets, login, logout
   if (path === "/login") return page("/login.html")!;
   if (["/login.html", "/style.css", "/config.js"].includes(path)) return page(path)!;
@@ -78,7 +93,10 @@ async function route(req: Request): Promise<Response> {
       case "/api/cart": return json({ items: await cartItems() });
       case "/api/lists": return json({ lists: await savedLists() });
       case "/api/list": return json(await savedList(Number(url.searchParams.get("id"))));
-      case "/api/crawl": case "/api/eans": return json({ running: false, log: "" });  // jobs run via Mikku
+      case "/api/crawl": case "/api/eans": case "/api/refresh": {  // status of the latest run with that phase
+        const r = await latestRun(JOB_PHASE[path]);
+        return json({ running: !!r?.running, log: r ? r.log + (r.stale ? "\n(stopped: no progress for 20 min)" : "") : "" });
+      }
       case "/api/search": {
         const n = Math.max(1, Math.min(Number(url.searchParams.get("n") ?? 60), 150));
         return json({ candidates: await search(url.searchParams.get("source") ?? "", url.searchParams.get("q") ?? "", n), n });
@@ -104,6 +122,8 @@ async function route(req: Request): Promise<Response> {
       case "/api/product/update": await productUpdate(a.id, a); return json({ ok: true });
       case "/api/product/delete": await productDelete(a.id); return json({ ok: true });
       case "/api/eans/dismiss": await eanDismiss(a.product_id); return json({ ok: true });
+      case "/api/crawl": case "/api/eans": case "/api/refresh":
+        return json({ ok: true, ...(await startRun([JOB_PHASE[path]], "manual")) });
       case "/api/link": return json({ ok: true, offers: await link(a.source, a.ref, a.product_id, a.name, a.packs, a.qty) });
       case "/api/unlink": return json({ ok: true, removed: await unlink(a.source, a.ref, a.product_id) });
     }

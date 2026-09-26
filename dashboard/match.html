@@ -421,14 +421,11 @@ async function pollJob(name, label){
 $("crawl").onclick = async ()=>{ await api("crawl", {}); pollJob("crawl", "Crawling Kupi"); };
 $("eans").onclick = async ()=>{ await api("eans", {}); pollJob("eans", "Finding barcodes"); };
 pollJob("crawl", "Crawling Kupi"); pollJob("eans", "Finding barcodes");
-$("refresh").onclick = async ()=>{
-  const b = $("refresh"); b.disabled = true;
-  $("gstatus").textContent = "Fetching store prices of every matched item…";
-  try{ await api("fetch", {}); $("gstatus").textContent = "Store prices refreshed."; await reloadProducts();
-       document.querySelectorAll("details.prod[open]").forEach(d=>renderPanel(d.dataset.id)); }
+$("refresh").onclick = async ()=>{  // a background run (the edge chains it via Mikku; locally it's immediate)
+  try{ const d = await api("refresh", {}); if(d.note) $("gstatus").textContent = d.note; pollJob("refresh", "Refreshing store prices"); }
   catch(e){ $("gstatus").textContent = e.message; }
-  finally{ b.disabled = false; }
 };
+pollJob("refresh", "Refreshing store prices");
 load();
 </script>
 </body>

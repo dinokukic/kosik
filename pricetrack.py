@@ -813,11 +813,11 @@ class Tesco:
 
     def fetch(self, refs):
         out, refs = {}, list(refs)
-        for i in range(0, len(refs), 20):
+        for i in range(0, len(refs), 10):  # xapi rejects batches over 10 operations
             if i: time.sleep(1.5)
             ops = [{"operationName": f"P{j}", "variables": {"t": t}, "query":
                     "query P%d($t:String){product(tpnc:$t){%s}}" % (j, self.NODE)}
-                   for j, t in enumerate(refs[i:i + 20])]
+                   for j, t in enumerate(refs[i:i + 10])]
             for res in self._post(ops):
                 offs = self._offers((res.get("data") or {}).get("product"))
                 if offs: out[offs[0]["store_ref"]] = offs
@@ -1662,7 +1662,7 @@ def serve(port):
     import functools, traceback
     import threading, io
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    JOBS = {"crawl": crawl, "eans": find_eans}  # long runs, one thread each, log kept for the UI
+    JOBS = {"crawl": crawl, "eans": find_eans, "refresh": lambda: (fetch(None), print("store prices done"))}  # long runs, one thread each, log kept for the UI
     jobs = {name: {"thread": None, "log": io.StringIO()} for name in JOBS}
 
     class JobLog(io.StringIO):  # print() from the job thread lands here (stdout is swapped per thread)
@@ -1734,7 +1734,7 @@ def serve(port):
                     return self._json(saved_list(int(q["id"])))
                 if u.path == "/api/products":
                     return self._json(dict(products=products_status(), sources=list(SOURCES)))
-                if u.path in ("/api/crawl", "/api/eans"):
+                if u.path in ("/api/crawl", "/api/eans", "/api/refresh"):
                     return self._json(job_status(u.path.rsplit("/", 1)[1]))
                 if u.path == "/api/suggest":
                     return self._json(dict(results=suggest(int(q["product_id"]))))
@@ -1786,7 +1786,7 @@ def serve(port):
                 if u == "/api/cart/remove":
                     cart_remove(a.get("id"), a.get("checked_only", False), a.get("all", False))
                     return self._json(dict(ok=True))
-                if u in ("/api/crawl", "/api/eans"):
+                if u in ("/api/crawl", "/api/eans", "/api/refresh"):
                     return self._json(dict(ok=True, started=start_job(u.rsplit("/", 1)[1])))
                 if u == "/api/eans/dismiss":
                     ean_dismiss(a["product_id"])

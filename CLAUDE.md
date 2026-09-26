@@ -29,6 +29,16 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   Login: APP_PASSWORD -> HMAC-signed cookie (SameSite=Lax; site + api are same-site), CORS
   only for SITE_URL. DNS for ulandino.com is at Namecheap (CNAMEs, not Bunny DNS).
   Pull zone gotcha: DisableCookies=true by default strips Set-Cookie -> turned off.
+- **Background jobs on the edge (2026-09-26)** — `edge/src/jobs.ts`: one weekly run, phases
+  stores -> kupi -> eans, done in slices (<= ~40 subrequests, ~20 s each) with progress in
+  `job_run`. Mikku (mikku.dev, a colleague's scheduler) schedule `kosik-weekly` cron
+  `0 13 * * 5` (Fri 15:00 CEST / 14:00 CET) POSTs /jobs/weekly; after each slice the script
+  publishes /jobs/continue?run&step to Mikku (idempotencyKey per step) and each step is claimed
+  atomically (duplicate deliveries skip). /jobs/* need `Authorization: Bearer JOB_SECRET`
+  (rotated 2026-09-26; value in .env KOSIK_JOB_SECRET). `chain=0` lets the caller drive slices.
+  Match-screen buttons start single-phase runs. First full run: 79 slices, ~30 min, 11,801
+  flyer offers, 342 store links. Gotchas: Edge Script env changes apply only on the next
+  deploy; Tesco xapi allows max 10 operations per batch.
 - **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
   VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
 - **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):

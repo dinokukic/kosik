@@ -12,6 +12,36 @@ for one household. **Not a product — never redistribute scraped prices.**
 See **CLAUDE.md** for the full design (three-layer data model, matrix view, basket,
 verified Rohlík API, Bunny architecture). Start there.
 
+[![Deploy with Claude](https://img.shields.io/badge/Deploy%20with-Claude-D97757?logo=claude&logoColor=white)](#deploy-with-claude)
+
+## Deploy with Claude
+
+Runs entirely on your own [bunny.net](https://bunny.net) account: a Bunny Database and one
+Edge Script that serves the app and its API. You need [Claude Code](https://claude.com/claude-code),
+[Deno](https://deno.com) and the bunny CLI (`npm i -g @bunny.net/cli`, then `bunny login`).
+
+```bash
+git clone https://github.com/dinokukic/kosik && cd kosik
+claude "/deploy-to-bunny"
+```
+
+Claude checks the prerequisites, asks a couple of questions (a name, optional extras) and runs
+the scripted setup: database + schema, Edge Script + pull zone, secrets, build, deploy, and a
+login check. You get a URL; the password is in `.env` as `KOSIK_PASSWORD`.
+
+Without Claude it's the same script:
+
+```bash
+cd edge && deno task setup --name kosik     # re-runnable; finished steps are skipped
+deno task teardown                          # deletes the script, pull zone and database
+```
+
+Optional, in `.env` before you run it: `KOSIK_PASSWORD` (else generated), `TESCO_XAPI_KEY`
+(else Tesco is skipped) and `MIKKU_API_KEY` ([mikku.dev](https://mikku.dev) runs the weekly
+refresh on Fridays; without it, **Refresh everything** on the Match page runs it while the page
+is open). Custom domain: point a CNAME at the `*.bunny.run` hostname, then
+`deno task setup --domain kosik.example.com` and `deno task setup` once more.
+
 ## Layout
 ```
 watchlist.csv          32 products from a real Makro receipt (EANs, VAT, packs, units)
@@ -29,7 +59,7 @@ package.json           @bunny.net/database-client (for bunny/seed.mjs)
 .env                   Bunny creds (gitignored — never commit)
 ```
 
-## Quick start
+## Local tool (Python, optional)
 Needs `.env` with `BUNNY_DATABASE_URL`, `BUNNY_DATABASE_AUTH_TOKEN` and `TESCO_XAPI_KEY`.
 `PRICETRACK_DB=local` runs against a local `prices.db` instead.
 ```bash

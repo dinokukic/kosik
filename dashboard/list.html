@@ -31,7 +31,9 @@
   <div id="stores"></div>
   <section class="compare noprint" id="compare" hidden>
     <h2>What this list would cost <label class="fl"><input type="checkbox" id="withFlyers" checked> include flyer deals</label></h2>
-    <table><tbody id="compareRows"></tbody></table>
+    <p class="headline" id="compareHead"></p>
+    <div class="bars" id="compareBars"></div>
+    <div class="tips" id="tips" hidden><h3>Tweak your list</h3><ul id="tipList"></ul></div>
     <p class="hint" id="compareNote"></p>
   </section>
   <section class="saved noprint" id="saved" hidden>
@@ -85,7 +87,9 @@ function line(it, ro){
   </li>`;
 }
 
-// ---- cheapest / efficient run / average / most expensive (edge: /api/scenarios)
+// ---- cheapest / efficient run / average / most expensive, your picks, and tips (edge: /api/scenarios)
+const signed = n => `${n > 0 ? "+" : n < 0 ? "−" : ""}${CZK(Math.abs(n))}`;
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 async function loadCompare(){
   const box = $("compare");
   const items = VIEW ? VIEW.items : ITEMS;
@@ -93,23 +97,68 @@ async function loadCompare(){
   const q = (VIEW ? `saved=${VIEW.id}&` : "") + `flyers=${$("withFlyers").checked ? 1 : 0}`;
   const d = await api("scenarios?" + q).catch(()=>null);
   if(!d || !d.scenarios){ box.hidden = true; return; }  // not available (e.g. local server)
-  const s = d.scenarios, base = s.cheapest.total;
-  const diff = t => t == null ? "" : t === base ? "—" : `${t > base ? "+" : ""}${CZK(t - base)} (${t > base ? "+" : ""}${Math.round((t / base - 1) * 100)} %)`;
-  const row = (label, stores, total, extra="") => `<tr><th>${label}</th><td class="st">${stores}</td>
-    <td class="tot">${total == null ? "–" : CZK(total)}</td><td class="df">${diff(total)}${extra}</td></tr>`;
-  $("compareRows").innerHTML =
-    row("Cheapest", `${s.cheapest.stores} stores: ${esc(s.cheapest.list.join(", "))}`, s.cheapest.total) +
-    s.efficient.map(e => row(e.k === 1 ? "One-stop" : `Best ${e.k} stores`, esc(e.stores.join(" + ")) +
-      (e.covered < e.of ? ` <span class="warn">(${e.covered} of ${e.of} items)</span>` : ""), e.total)).join("") +
-    row("Average", "each item at an average store", s.average.total) +
-    row("Most expensive", "each item at its priciest store", s.most_expensive.total) +
-    (VIEW ? "" : row("Your picks", "the stores on this list", s.your_picks.total,
-      s.your_picks.missing ? ` <span class="warn">(${s.your_picks.missing} not priced now)</span>` : ""));
+  const s = d.scenarios, base = s.cheapest.total, avg = s.average.total, yours = VIEW ? null : s.your_picks.total;
+
+  // headline: your picks against the average and the cheapest possible
+  $("compareHead").innerHTML = yours == null
+    ? `Cheapest possible <b>${CZK(base)}</b>, average <b>${CZK(avg)}</b>, most expensive <b>${CZK(s.most_expensive.total)}</b>.`
+    : `Your picks come to <b>${CZK(yours)}</b>: ` +
+      (yours <= avg ? `<b class="good">${CZK(avg - yours)} (${Math.round((1 - yours / avg) * 100)} %) under the average</b>`
+                    : `<b class="warn">${CZK(yours - avg)} over the average</b>`) +
+      (yours - base > 0.5 ? `, ${CZK(yours - base)} above the cheapest possible.` : `, the cheapest possible.`) +
+      ` The spread between cheapest and most expensive is ${CZK(s.most_expensive.total - base)}.`;
+
+  // bars, cheapest to most expensive
+  const bars = [
+    { label: "Cheapest", sub: `${plural(s.cheapest.stores, "store")}: ${s.cheapest.list.join(", ")}`, total: base, moves: s.cheapest.moves },
+    // only combinations that get everything: a partial one looks cheap because it leaves items out
+    ...s.efficient.filter(e => e.covered === e.of && e.k < s.cheapest.stores)
+      .map(e => ({ label: e.k === 1 ? "One stop" : `Best ${e.k} stores`, sub: e.stores.join(" + "), total: e.total, moves: e.moves })),
+    { label: "Average", sub: "each item at an average store", total: avg },
+    { label: "Most expensive", sub: "each item at its priciest store", total: s.most_expensive.total },
+    ...(VIEW ? [] : [{ label: "Your picks", sub: "the stores on this list", total: yours, mine: true,
+      warn: s.your_picks.missing ? `${s.your_picks.missing} not priced now` : "" }]),
+  ].filter(b => b.total != null).sort((a, b) => a.total - b.total || (a.mine ? -1 : 0));
+  const max = Math.max(...bars.map(b => b.total));
+  const APPLY = [];
+  $("compareBars").innerHTML = bars.map(b => {
+    const diff = Math.abs(b.total - base) < 0.005 ? "cheapest" : `${signed(b.total - base)}${b.total / base - 1 >= 0.01 ? ` (+${Math.round((b.total / base - 1) * 100)} %)` : ""}`;
+    const use = !VIEW && b.moves && b.moves.length ? `<button class="btn ghost small" data-apply="${APPLY.push({moves: b.moves, what: b.label.toLowerCase()}) - 1}">Use this</button>` : "";
+    return `<div class="bar ${b.mine ? "mine" : ""}">
+      <div class="bl"><b>${esc(b.label)}</b><span>${esc(b.sub)}${b.warn ? ` <span class="warn">(${esc(b.warn)})</span>` : ""}</span></div>
+      <div class="bt"><i style="width:${(b.total / max * 100).toFixed(1)}%"></i></div>
+      <div class="bv"><b>${CZK(b.total)}</b><span>${diff}</span>${use}</div></div>`;
+  }).join("");
+
+  // tips: cheaper at a store you visit anyway / one stop fewer
+  const tips = VIEW ? [] : d.tips || [];
+  $("tips").hidden = !tips.length;
+  $("tipList").innerHTML = tips.map(t => {
+    const list = esc(t.items.join(", ")), to = esc(t.to.join(" and "));
+    const cost = t.delta < -0.005 ? `<b class="good">save ${CZK(-t.delta)}</b>` : t.delta > 0.005 ? `<b>${signed(t.delta)}</b>` : "<b>same price</b>";
+    const text = t.kind === "cheaper"
+      ? `<b>${plural(t.items.length, "item")} cheaper at stores you're already visiting.</b> Move ${list} to ${to}.`
+      : `<b>${t.items.length <= 3 ? "Only " : ""}${plural(t.items.length, "item")} at ${esc(t.store)}.</b> Get ${list} at ${to} instead: one stop fewer.`;
+    return `<li><span class="tt">${text}</span><span class="tc">${cost}</span>
+      <button class="btn small" data-apply="${APPLY.push({moves: t.moves, what: t.kind === "drop" ? `skipping ${t.store}` : "the cheaper stores"}) - 1}">Apply changes</button></li>`;
+  }).join("");
+  box.querySelectorAll("[data-apply]").forEach(b => b.onclick = () => applyMoves(APPLY[+b.dataset.apply], b));
+
   $("compareNote").textContent = `${d.priced} of ${d.items} items priced` +
     (d.only_one_store ? `, ${d.only_one_store} sold by only one store (same cost in every row)` : "") +
     ". Each item is costed on the same reference pack × price per unit, so pack sizes don't skew stores. " +
-    "Store combinations are picked by how many items they cover, then by total.";
+    "Store combinations are picked by how many items they cover, then by total. Applying a change keeps your quantities.";
   box.hidden = false;
+}
+async function applyMoves({moves, what}, btn){
+  const n = moves.length;
+  if(n > 3 && !confirm(`Move ${n} items on your list (${what})?`)) return;
+  btn.disabled = true;
+  try{
+    const r = await api("cart/move", {moves: moves.map(({row_key, to, kind}) => ({row_key, store_id: to, kind}))});
+    $("status").textContent = `Moved ${plural(r.moved, "item")}.`;
+    await load();
+  }catch(e){ $("status").textContent = e.message; btn.disabled = false; }
 }
 $("withFlyers").onchange = loadCompare;
 

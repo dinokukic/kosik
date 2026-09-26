@@ -66,6 +66,25 @@ export async function cartToggle(rowKey: string, storeId: string, kind = "store"
   return true;
 }
 
+/** Move list lines to other stores (the list page's "apply" on a tip or scenario), keeping
+ *  quantities. Every target must have a current price; all lines move in one transaction. */
+export async function cartMove(moves: { row_key: string; store_id: string; kind?: string }[]): Promise<number> {
+  if (!Array.isArray(moves) || !moves.length) return 0;
+  if (moves.length > 300) throw new HttpError(400, "too many moves");
+  const { stores, rows } = await matrixRows();
+  const updates = moves.map((m) => {
+    const kind = m.kind === "flyer" ? "flyer" : "store";
+    const { snap } = matrixCell(rows, stores, m.row_key, m.store_id, kind);
+    if (!snap) throw new HttpError(409, "prices changed since this suggestion; reload the list");
+    return stmt(`UPDATE cart_item SET store_id=?, store_name=?, kind=?, item_name=?, amount=?, price_incl=?, unit_price=?,
+                   promo_until=?, club=?, note=?, url=?, checked=0 WHERE row_key=?`,
+      m.store_id, snap.store_name, kind, snap.item_name, snap.amount, snap.price_incl, snap.unit_price,
+      snap.promo_until, snap.club, snap.note, snap.url, m.row_key);
+  });
+  await db().batch(updates, { mode: "immediate" });
+  return updates.length;
+}
+
 export async function cartUpdate(id: number, qty?: number, checked?: boolean) {
   if (qty !== undefined && qty !== null) await run("UPDATE cart_item SET qty=? WHERE id=?", Math.max(1, Math.trunc(Number(qty))), id);
   if (checked !== undefined && checked !== null) await run("UPDATE cart_item SET checked=? WHERE id=?", checked ? 1 : 0, id);

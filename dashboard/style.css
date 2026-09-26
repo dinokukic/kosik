@@ -189,11 +189,30 @@
   .compare{margin:1.8rem 0 .5rem}
   .compare h2{font-size:1.05rem;border-bottom:2px solid var(--ink);padding-bottom:.35rem;display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:baseline;justify-content:space-between}
   .compare h2 .fl{font-size:.75rem;font-weight:400;color:var(--muted)}
-  .compare table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-  .compare th,.compare td{padding:.45rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:baseline}
-  .compare th{font-weight:600;white-space:nowrap}
-  .compare td.st{font-size:.78rem;color:var(--muted)}
-  .compare td.tot{text-align:right;white-space:nowrap;font-weight:600}
-  .compare td.df{text-align:right;white-space:nowrap;font-size:.8rem;color:var(--muted)}
+  .compare .headline{font-size:.95rem;margin:.8rem 0 1rem}
+  .compare .good{color:var(--win)}
+  .bars{display:flex;flex-direction:column;gap:.15rem;font-variant-numeric:tabular-nums}
+  .bar{display:grid;grid-template-columns:minmax(7rem,13rem) 1fr 8.5rem;gap:.3rem 1rem;align-items:center;
+    padding:.45rem .4rem;border-bottom:1px solid var(--line)}
+  .bar .bl{display:flex;flex-direction:column;min-width:0}
+  .bar .bl span{font-size:.72rem;color:var(--muted);overflow-wrap:anywhere}
+  .bar .bt{height:.7rem;background:transparent;border-radius:.2rem}
+  .bar .bt i{display:block;height:100%;background:var(--muted);opacity:.45;border-radius:.2rem}
+  .bar.mine{background:var(--winbg)}
+  .bar.mine .bt i{background:var(--win);opacity:1}
+  .bar .bv{display:flex;flex-direction:column;align-items:flex-end;white-space:nowrap}
+  .bar .bv span{font-size:.72rem;color:var(--muted)}
+  .btn.small{font-size:.72rem;padding:.2rem .6rem;margin-top:.2rem}
+  .tips h3{font-size:.9rem;margin:1.4rem 0 .3rem}
+  .tips ul{list-style:none;margin:0;padding:0}
+  .tips li{display:grid;grid-template-columns:1fr auto auto;gap:.4rem 1rem;align-items:center;
+    padding:.55rem 0;border-bottom:1px dashed var(--line);font-size:.85rem}
+  .tips .tc{white-space:nowrap;font-variant-numeric:tabular-nums}
+  @media (max-width:560px){
+    .bar{grid-template-columns:1fr 7.5rem}
+    .bar .bt{grid-column:1/-1;grid-row:2}
+    .tips li{grid-template-columns:1fr auto}
+    .tips li .btn{grid-column:1/-1;justify-self:start}
+  }
   .compare .warn{color:#b04a3a}
   .compare .hint{font-size:.72rem;color:var(--muted);font-style:italic}

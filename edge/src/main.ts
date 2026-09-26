@@ -6,7 +6,7 @@ import { env } from "./env.ts";
 import { cartItems, HttpError, matrix, products, savedList, savedLists } from "./read.ts";
 import { link, lookup, search, suggest } from "./match.ts";
 import { scenarios } from "./scenarios.ts";
-import { cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, productDelete,
+import { cartMove, cartRemove, cartSave, cartToggle, cartUpdate, eanDismiss, productAdd, productDelete,
   productUpdate, savedListDelete, savedListReuse, unlink } from "./write.ts";
 import { PAGES } from "./pages.gen.ts";
 
@@ -118,6 +118,7 @@ async function route(req: Request): Promise<Response> {
     const a: any = await req.json().catch(() => ({}));
     switch (path) {
       case "/api/cart/toggle": return json({ ok: true, in_cart: await cartToggle(a.row_key, a.store_id, a.kind ?? "store") });
+      case "/api/cart/move": return json({ ok: true, moved: await cartMove(a.moves) });
       case "/api/cart/update": await cartUpdate(a.id, a.qty, a.checked); return json({ ok: true });
       case "/api/cart/remove": await cartRemove(a.id, !!a.checked_only, !!a.all); return json({ ok: true });
       case "/api/cart/save": return json({ ok: true, id: await cartSave(a.name) });

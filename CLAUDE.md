@@ -132,6 +132,12 @@ Saved lists: "Save list & start new" snapshots `cart_item` into `saved_list` (JS
 empties the list; saved lists can be opened (read-only, printable), reused (back onto the list
 at today's prices) or deleted. Matrix cells show the SHELF price big with pack size and
 per-unit price small; "cheapest" is still decided per unit.
+Cost analysis (edge only, `/api/scenarios`, 2026-09-26): list.html charts your picks against
+cheapest / best 2–3 stores (only combos covering every item) / average / most expensive, all
+costed on a common reference pack. Tips ("cheaper at a store you already visit", "only N items
+at X: get them at Y instead, +/- Kč, one stop fewer") and "Use this" on scenario rows apply via
+`POST /api/cart/move {moves:[{row_key, store_id, kind}]}` — keeps qty, one batch, 409 if a
+target has no current price. The user still decides; nothing moves without a click.
 Original brief:
 - User picks which stores they'll actually visit this week.
 - For each need, show the cheapest offering **at each store being visited**.

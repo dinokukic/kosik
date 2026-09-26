@@ -5,6 +5,7 @@
     padding-top:env(safe-area-inset-top,0); padding-bottom:env(safe-area-inset-bottom,0);
   }
   *{box-sizing:inherit}
+  [hidden]{display:none !important}  /* .toolbar etc. set display, which would beat the attribute */
   @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
     --ink:#ece7db; --paper:#16150f; --line:#332f24; --muted:#9a917d; --winbg:#17251a;
   }}

@@ -22,6 +22,13 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   hits (share of our name's words, brand must match, pack size +/-, both stores agree
   +0.1), keep >= 0.6 in `ean_candidate`; `ean_lookup` records what was searched/dismissed.
   Match screen: "Use this barcode" sets the EAN and runs the barcode match across stores.
+- **Hosting on bunny.net (2026-09-26):** static site `kosik` (bunny sites; pages from
+  `dashboard/`, deployed by `edge/tools/build_site.ts` with `config.js` -> API base) at
+  kosik.ulandino.com; Edge Script `kosik-api` (id 92715, pull zone 6693170; code in `edge/`)
+  at api.kosik.ulandino.com, also serving the pages same-origin on kosik-api-j8agg.bunny.run.
+  Login: APP_PASSWORD -> HMAC-signed cookie (SameSite=Lax; site + api are same-site), CORS
+  only for SITE_URL. DNS for ulandino.com is at Namecheap (CNAMEs, not Bunny DNS).
+  Pull zone gotcha: DisableCookies=true by default strips Set-Cookie -> turned off.
 - **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
   VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
 - **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):

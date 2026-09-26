@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Košík login</title>
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>Košík<small>household price tracker</small></h1></header>
+  <form method="post" class="login" id="login">
+    <label>Password<input type="password" name="password" autofocus autocomplete="current-password"></label>
+    <button class="btn">Sign in</button> <span class="status err" id="err"></span>
+  </form>
+</div>
+<script>
+  // Post straight to the API; it sets the session cookie and redirects back to the site.
+  document.getElementById("login").action = window.KOSIK_API + "api/login";
+  if (location.search.includes("bad")) document.getElementById("err").textContent = "Wrong password.";
+</script>
+</body>
+</html>

@@ -1,9 +1,9 @@
-// Embed ../dashboard/{*.html,*.css} into src/pages.gen.ts so the Edge Script serves them
+// Embed ../dashboard/{*.html,*.css,*.js} into src/pages.gen.ts so the Edge Script serves them
 // same-origin with the API (the session cookie then just works).
 const dir = new URL("../../dashboard/", import.meta.url);
 const pages: Record<string, string> = {};
 for await (const e of Deno.readDir(dir)) {
-  if (e.isFile && /\.(html|css)$/.test(e.name)) pages["/" + e.name] = await Deno.readTextFile(new URL(e.name, dir));
+  if (e.isFile && /\.(html|css|js)$/.test(e.name)) pages["/" + e.name] = await Deno.readTextFile(new URL(e.name, dir));
 }
 pages["/"] = pages["/index.html"];
 await Deno.writeTextFile(new URL("../src/pages.gen.ts", import.meta.url),

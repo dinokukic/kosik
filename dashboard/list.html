@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Košík list</title>
 <link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -41,7 +42,7 @@ const dm = iso => iso ? `${+iso.slice(8,10)}. ${+iso.slice(5,7)}.` : "";
 let ITEMS = [], VIEW = null;  // VIEW = a saved list being looked at (read-only), else the current list
 
 async function api(path, body){
-  const r = await fetch("api/"+path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
+  const r = await kosikFetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"},
                                                body:JSON.stringify(body)} : {});
   const d = await r.json().catch(()=>({error:"server not running? start: python3 pricetrack.py serve"}));
   if(!r.ok || d.error) throw new Error(d.error || r.statusText);

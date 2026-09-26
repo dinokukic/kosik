@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Košík matrix</title>
 <link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -38,7 +39,7 @@ function apply(d){
 async function load(){
   try{
     // live from `pricetrack.py serve`, else the last export
-    let r = await fetch("api/matrix").catch(()=>null);
+    let r = await kosikFetch("matrix").catch(()=>null);
     LIVE = !!(r && r.ok);
     if(!LIVE) r = await fetch("prices.json?"+Date.now());
     apply(await r.json());
@@ -141,7 +142,7 @@ function navCount(){
 async function toggle(b){
   b.disabled = true;
   try{
-    const r = await fetch("api/cart/toggle", {method:"POST", headers:{"Content-Type":"application/json"},
+    const r = await kosikFetch("cart/toggle", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({row_key:b.dataset.row, store_id:b.dataset.store, kind:b.dataset.kind})});
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || r.statusText);

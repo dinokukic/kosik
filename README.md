@@ -117,12 +117,17 @@ cd edge && deno task teardown               # deletes the script, pull zone and 
 
 ## Using it
 
-1. **Match:** add the things you buy regularly. Barcodes give exact matches across stores;
-   otherwise search by name (a separate search text lets you name items in one language and
-   search in Czech).
-2. **Match → Refresh everything:** pulls current prices and this week's flyers.
+**[The user guide](docs/guide/README.md)** walks through a week with Košík, with screenshots:
+adding items (by barcode, by name, as generic items, flyer deals), refreshing prices, reading
+the matrix, building the list, the cost comparison and tips, and printing.
+
+In short:
+1. **Match:** add the things you buy and link them at each store.
+2. **Match → Refresh everything:** pull current prices and this week's flyers.
 3. **Matrix:** see where everything is cheapest, then tap cells to build the list.
-4. **List:** check the cost chart and tips, apply the ones you like, then print it.
+4. **List:** check the cost chart and tips, apply the ones you like, then print.
+
+[![The matrix](docs/guide/img/matrix.png)](docs/guide/README.md)
 
 ## How it works
 

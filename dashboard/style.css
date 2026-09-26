@@ -13,6 +13,7 @@
   body{margin:0;background:var(--paper);color:var(--ink);
     font-family:"Iowan Old Style",Palatino,"Palatino Linotype",Georgia,serif;line-height:1.4}
   .wrap{max-width:940px;margin:0 auto;padding:clamp(1.1rem,4vw,2.4rem)}
+  .wrap.wide{max-width:1800px}  /* the matrix: every store column visible on a big screen */
   header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem 2rem;
     border-bottom:2px solid var(--ink);padding-bottom:1rem;margin-bottom:.4rem}
   h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0;letter-spacing:-.01em;font-weight:600}

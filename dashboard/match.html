@@ -126,7 +126,7 @@ function render(){
     return `<details class="prod" data-id="${p.id}" ${open.includes(String(p.id))?'open':''}>
       <summary><span class="nm">${esc(p.name)}</span>
         <span class="badges">${badges}</span>
-        <span class="sub">${esc(p.category)} · per ${esc(p.unit)} (${+p.unit_qty} in the receipt pack)${p.need_name?' · need: '+esc(p.need_name):''}${p.search_query?' · searches “'+esc(p.search_query)+'”':''}</span>
+        <span class="sub">${esc(p.category)} · per ${esc(p.unit)} · pack of ${+p.unit_qty}${p.need_name?' · need: '+esc(p.need_name):''}${p.search_query?' · searches “'+esc(p.search_query)+'”':''}</span>
       </summary>
       <div class="panel" id="panel-${p.id}"></div>
     </details>`;

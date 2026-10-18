@@ -40,7 +40,13 @@ Czech stores, shows the cheapest per item, and produces a shopping-list-by-store
   (rotated 2026-09-26; value in .env KOSIK_JOB_SECRET). `chain=0` lets the caller drive slices.
   Match-screen buttons start single-phase runs. First full run: 79 slices, ~30 min, 11,801
   flyer offers, 342 store links. Gotchas: Edge Script env changes apply only on the next
-  deploy; Tesco xapi allows max 10 operations per batch.
+  deploy; Tesco xapi allows max 10 operations per batch. Tesco weighed items (`averageWeight`
+  set): `actual` is an average piece (loose, displayType QuantityOrWeight) or the per-kg price
+  (catch-weight packs, `catchWeightList`); both connectors report them per kg ("1 kg", unitPrice).
+- **One listing, one item (2026-10-18):** `link` checks ownership before saving the watch (a
+  refused link leaves nothing behind), and offering upserts keep the existing owner
+  (`COALESCE(offering.product_id, excluded.product_id)`), so a refresh can't move a listing
+  between items. Moving one = unlink, then link.
 - **Watchlist** (`watchlist.csv`, 32 items) = the original seed from a Makro receipt (EANs,
   VAT %, pack notes, `unit`/`unit_qty`). Items added later live only in the database.
 - **Schema: three layers BUILT** (`bunny/schema.sql`, same SQL on Bunny and local):

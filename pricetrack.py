@@ -215,8 +215,8 @@ def upsert_offering(c, store_id, store_ref, name, product_id=None, url="", unit_
                  VALUES (?,?,?,?,?,?,?,?)
                  ON CONFLICT(store_id,store_ref) DO UPDATE SET name=excluded.name,
                    url=excluded.url, source=excluded.source, active=1,
-                   product_id=COALESCE(excluded.product_id, offering.product_id),
-                   need_id=COALESCE(excluded.need_id, offering.need_id),
+                   product_id=COALESCE(offering.product_id, excluded.product_id),
+                   need_id=COALESCE(offering.need_id, excluded.need_id),
                    unit_qty=excluded.unit_qty""",  # recomputed on every save; a forced qty comes via watch.qty
               (store_id, str(store_ref), source, name, product_id, need_id, url, unit_qty))
     return c.execute("SELECT id FROM offering WHERE store_id=? AND store_ref=?",
@@ -783,7 +783,7 @@ class Tesco:
     aggregator = False
     ean_via_name = True
     URL = "https://xapi.tesco.com/"
-    NODE = ("id gtin title isForSale price{actual unitPrice unitOfMeasure} "
+    NODE = ("id gtin title isForSale averageWeight price{actual unitPrice unitOfMeasure} "
             "promotions{startDate endDate description attributes price{beforeDiscount afterDiscount}}")
 
     def _post(self, ops):
@@ -807,9 +807,14 @@ class Tesco:
             elif (pr.get("price") or {}).get("beforeDiscount"):
                 regular = pr["price"]["beforeDiscount"]; until = (pr.get("endDate") or "")[:10] or None
         gtin = (n.get("gtin") or "").lstrip("0") or None
-        o = store_offer("tesco", "Tesco", n["id"], n["title"], pack_size(n["title"]),
+        price, amount = n["price"]["actual"], pack_size(n["title"])
+        if n.get("averageWeight") and n["price"].get("unitOfMeasure") == "kg" and n["price"].get("unitPrice"):
+            # sold by weight: `actual` is an average piece (loose) or the per-kg price (catch-weight
+            # packs), while unitPrice, promo "before" prices and Clubcard texts are per kg
+            price, amount = n["price"]["unitPrice"], "1 kg"
+        o = store_offer("tesco", "Tesco", n["id"], n["title"], amount,
                         f"https://nakup.itesco.cz/groceries/cs-CZ/products/{n['id']}",
-                        n["price"]["actual"], regular, until, ean=gtin)
+                        price, regular, until, ean=gtin)
         out = [o]
         if club and club[0] < o["price_incl"]:
             out.append(extra_price(o, club[0], "clubcard", club="Tesco Clubcard", promo=True, until=club[1]))
@@ -1116,14 +1121,15 @@ def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None, product
     try:
         product, need_row = resolve_target(c, ean, need, product_id)
         packs = ",".join(packs) if isinstance(packs, (list, tuple)) else packs or None
-        c.execute("""INSERT INTO watch(source,ref,name,product_id,need_id,qty,packs)
+        offers = source(src).fetch([ref]).get(ref, [])
+        save_watch = lambda: c.execute("""INSERT INTO watch(source,ref,name,product_id,need_id,qty,packs)
                      VALUES (?,?,?,?,?,?,?)
                      ON CONFLICT DO UPDATE SET name=excluded.name, qty=excluded.qty,
                        packs=excluded.packs""",
                   (src, ref, name, product["id"] if product else None,
                    need_row["id"] if need_row else None, qty, packs))
-        offers = source(src).fetch([ref]).get(ref, [])
         if source(src).aggregator:
+            save_watch()
             save_deals(c, offers)  # the flyer layer; pack filter applies in v_deal
             c.commit()
             keep = set(packs.split(",")) if packs else None
@@ -1136,6 +1142,7 @@ def link(src, ref, ean=None, need=None, qty=None, name=None, packs=None, product
                 if owner:
                     raise ValueError(f"This {o['store_name']} listing already belongs to “{owner['name']}”. "
                                      "Unlink it there first, or group both items under one need.")
+        save_watch()
         save_offers(c, src, offers, product, need_row, qty)
         retire_missing(c, src, ref, product, need_row, [o["store_ref"] for o in offers])
         c.commit()

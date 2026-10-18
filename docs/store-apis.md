@@ -95,6 +95,7 @@ To batch, put one `product(tpnc:…)` operation per id in the array.
 **Price semantics (verified):**
 - `price.actual` is the **current selling price, including VAT and any normal promotion**. During a promo it is the promo price.
 - The regular shelf price is `promotions[].price.beforeDiscount` (54.90 above). With no promotion, `actual` is the regular price. Example: Magnesia 1.5 l at 18.50 with `promotions: []`.
+- **Weighed items** carry `averageWeight`. Loose ones (`displayType: "QuantityOrWeight"`) price `actual` for an average piece (loose chicken breast: 27.48 = 109.90/kg × 0.25 kg); catch-weight packs (`catchWeightList: [{price, weight, default}]`) put the per-kg price in `actual`. `unitPrice` (per `unitOfMeasure: "kg"`), promo `beforeDiscount` and Clubcard texts ("79,90 Kč/kg s Clubcard") are per kg, so these are stored per kg.
 - **Clubcard prices** show up as a promotion with `attributes:["CLUBCARD_PRICING"]`. `actual` stays at the shelf price, and the Clubcard price appears only inside `description`, e.g. `"119,90 Kč Ušetřete 1/3 s Clubcard"`, where `afterDiscount` = shelf price. You need to parse that text.
 - `unitPrice` + `unitOfMeasure` (kg / l / kus / m). The pack size is only in `title`.
 

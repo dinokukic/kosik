@@ -148,7 +148,7 @@ const Kosik: Source = {
 };
 
 // ---------------------------------------------------------------- Tesco (xapi GraphQL; key in env)
-const TESCO_NODE = "id gtin title isForSale price{actual unitPrice unitOfMeasure} promotions{startDate endDate description attributes price{beforeDiscount afterDiscount}}";
+const TESCO_NODE = "id gtin title isForSale averageWeight price{actual unitPrice unitOfMeasure} promotions{startDate endDate description attributes price{beforeDiscount afterDiscount}}";
 async function tescoPost(ops: unknown[]) {
   const key = env("TESCO_XAPI_KEY");
   if (!key) throw new Error("TESCO_XAPI_KEY missing");
@@ -165,8 +165,11 @@ function tescoOffers(n: any): Offer[] {
       if (m) club = [Number(m[1].replace(/[  ]/g, "").replace(",", ".")), (pr.endDate ?? "").slice(0, 10) || null];
     } else if (pr.price?.beforeDiscount) { regular = pr.price.beforeDiscount; until = (pr.endDate ?? "").slice(0, 10) || null; }
   }
-  const o = storeOffer("tesco", "Tesco", n.id, n.title, packSize(n.title), `https://nakup.itesco.cz/groceries/cs-CZ/products/${n.id}`,
-    n.price.actual, regular, until, null, (n.gtin ?? "").replace(/^0+/, "") || null);
+  // sold by weight: `actual` is an average piece (loose) or the per-kg price (catch-weight packs),
+  // while unitPrice, promo "before" prices and Clubcard texts are per kg -> report per kg
+  const byWeight = !!n.averageWeight && n.price.unitOfMeasure === "kg" && n.price.unitPrice != null;
+  const o = storeOffer("tesco", "Tesco", n.id, n.title, byWeight ? "1 kg" : packSize(n.title), `https://nakup.itesco.cz/groceries/cs-CZ/products/${n.id}`,
+    byWeight ? n.price.unitPrice : n.price.actual, regular, until, null, (n.gtin ?? "").replace(/^0+/, "") || null);
   return club && club[0] < o.price_incl ? [o, extra(o, club[0], "clubcard", "Tesco Clubcard", null, club[1])] : [o];
 }
 const Tesco: Source = {

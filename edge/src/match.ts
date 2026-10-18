@@ -27,7 +27,7 @@ export function offerStatements(src: string, offers: Offer[], product: Row, qty:
       stmt("INSERT OR IGNORE INTO store(id,name) VALUES (?,?)", o.store_id, o.store_name || o.store_id),
       stmt(`INSERT INTO offering(store_id,store_ref,source,name,product_id,need_id,url,unit_qty) VALUES (?,?,?,?,?,NULL,?,?)
             ON CONFLICT(store_id,store_ref) DO UPDATE SET name=excluded.name, url=excluded.url, source=excluded.source, active=1,
-              product_id=COALESCE(excluded.product_id, offering.product_id), unit_qty=excluded.unit_qty`,
+              product_id=COALESCE(offering.product_id, excluded.product_id), unit_qty=excluded.unit_qty`,
         o.store_id, o.store_ref, src, o.name, product.id, o.url, q),
       stmt(`INSERT OR REPLACE INTO price(offering_id,ts,ref,price_incl,is_promo,valid_from,promo_until,club,note)
             VALUES ((SELECT id FROM offering WHERE store_id=? AND store_ref=?),?,?,?,?,?,?,?,?)`,
